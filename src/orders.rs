@@ -76,6 +76,12 @@ pub struct OrderListQuery {
     pub page_no: u32,
     pub page_size: u32,
     pub order_by: String,
+    /// UI "new" tab uses `"0"`. Historical completed/shipped need `None` (null/empty).
+    pub pack_state: Option<String>,
+    /// Include older BigSeller history rows (completed archive, etc.).
+    pub history_order: bool,
+    /// When true with empty status, broader listing (use carefully).
+    pub all_order: bool,
 }
 
 impl Default for OrderListQuery {
@@ -85,13 +91,44 @@ impl Default for OrderListQuery {
             page_no: 1,
             page_size: 50,
             order_by: "expireTime".into(),
+            pack_state: Some("0".into()),
+            history_order: false,
+            all_order: false,
         }
     }
 }
 
 impl OrderListQuery {
+    /// Active "To Process / New" style list (default worker path).
+    pub fn active(status: impl Into<String>) -> Self {
+        Self {
+            status: status.into(),
+            ..Default::default()
+        }
+    }
+
+    /// Historical / completed archive listing.
+    ///
+    /// BigSeller returns empty pages for `completed`/`shipped` when `packState` is `"0"`.
+    /// Use `history_order: true` and no pack filter.
+    pub fn historical(status: impl Into<String>) -> Self {
+        Self {
+            status: status.into(),
+            page_no: 1,
+            page_size: 50,
+            order_by: "orderCreateTime".into(),
+            pack_state: None,
+            history_order: true,
+            all_order: false,
+        }
+    }
+
     pub fn to_json(&self) -> Value {
         // Shape aligned with live UI capture (docs/pageList-request-template.json).
+        let pack_state = match &self.pack_state {
+            Some(s) => json!(s),
+            None => Value::Null,
+        };
         json!({
             "status": self.status,
             "pageNo": self.page_no,
@@ -110,10 +147,10 @@ impl OrderListQuery {
             "printStatus": null,
             "printLabelMark": null,
             "printCollectMark": null,
-            "packState": "0",
-            "allOrder": false,
-            "historyOrder": false,
-            "desc": 0,
+            "packState": pack_state,
+            "allOrder": self.all_order,
+            "historyOrder": self.history_order,
+            "desc": 1,
             "showLogisticsArr": 0,
             "showStoreArr": 0,
         })

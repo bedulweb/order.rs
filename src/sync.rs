@@ -35,6 +35,28 @@ pub struct SyncContext {
     pub account_code: Option<String>,
 }
 
+/// Options for paginated bucket pull.
+#[derive(Debug, Clone)]
+pub struct SyncBucketOpts {
+    pub page_size: u32,
+    pub max_pages: u32,
+    /// Use historical pageList flags (no packState filter + historyOrder).
+    pub historical: bool,
+    /// Sleep between BigSeller page requests (rate limit).
+    pub page_delay_ms: u64,
+}
+
+impl Default for SyncBucketOpts {
+    fn default() -> Self {
+        Self {
+            page_size: 50,
+            max_pages: 80,
+            historical: false,
+            page_delay_ms: 0,
+        }
+    }
+}
+
 /// Sync one status bucket (all pages).
 pub async fn sync_status_bucket(
     pool: &PgPool,
@@ -44,8 +66,33 @@ pub async fn sync_status_bucket(
     max_pages: u32,
     ctx: &SyncContext,
 ) -> Result<SyncStats> {
+    sync_status_bucket_with(
+        pool,
+        api,
+        status,
+        ctx,
+        SyncBucketOpts {
+            page_size,
+            max_pages,
+            historical: false,
+            page_delay_ms: 0,
+        },
+    )
+    .await
+}
+
+/// Sync one status bucket with full options (historical backfill, delays).
+pub async fn sync_status_bucket_with(
+    pool: &PgPool,
+    api: &OrdersApi,
+    status: &str,
+    ctx: &SyncContext,
+    opts: SyncBucketOpts,
+) -> Result<SyncStats> {
     let kind = match &ctx.account_code {
+        Some(c) if opts.historical => format!("orders_hist:{status}:{c}"),
         Some(c) => format!("orders_status:{status}:{c}"),
+        None if opts.historical => format!("orders_hist:{status}"),
         None => format!("orders_status:{status}"),
     };
     let run_id = begin_sync_run(pool, &kind, ctx.account_id).await?;
@@ -53,6 +100,8 @@ pub async fn sync_status_bucket(
     let mut upserted = 0i32;
     let mut created = 0i32;
     let mut state_changed = 0i32;
+    let page_size = opts.page_size;
+    let max_pages = opts.max_pages;
 
     let result = async {
         let mut page_no = 1u32;
@@ -61,13 +110,33 @@ pub async fn sync_status_bucket(
                 warn!(status, max_pages, "hit max_pages cap");
                 break;
             }
-            let q = OrderListQuery {
-                status: status.to_string(),
-                page_no,
-                page_size,
-                ..Default::default()
+            if page_no > 1 && opts.page_delay_ms > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(opts.page_delay_ms)).await;
+            }
+
+            let mut q = if opts.historical {
+                OrderListQuery::historical(status)
+            } else {
+                OrderListQuery::active(status)
             };
-            let page = api.page_list(&q).await?;
+            q.page_no = page_no;
+            q.page_size = page_size;
+
+            let page = match api.page_list(&q).await {
+                Ok(p) => p,
+                Err(e) => {
+                    // One retry after backoff on rate limit / transient errors.
+                    let msg = e.to_string();
+                    if msg.contains("frequent") || msg.contains("try again") || msg.contains("2001")
+                    {
+                        warn!(%msg, page_no, "pageList retry after backoff");
+                        tokio::time::sleep(std::time::Duration::from_secs(8)).await;
+                        api.page_list(&q).await?
+                    } else {
+                        return Err(e);
+                    }
+                }
+            };
             pages += 1;
 
             if page.rows.is_empty() {
@@ -88,6 +157,16 @@ pub async fn sync_status_bucket(
                     state_changed += 1;
                 }
             }
+
+            info!(
+                status,
+                page_no,
+                rows = page.rows.len(),
+                total = page.total,
+                upserted,
+                created,
+                "bucket page"
+            );
 
             let got = page.rows.len() as u32;
             if got < page_size {
@@ -111,6 +190,7 @@ pub async fn sync_status_bucket(
                 "pages": pages,
                 "upserted": upserted,
                 "created": created,
+                "historical": opts.historical,
                 "accountId": ctx.account_id,
             }),
         )
@@ -182,6 +262,67 @@ pub async fn sync_cancel_related(
                 warn!(status, error = %e, "cancel-related sync failed for bucket");
             }
         }
+    }
+    Ok(out)
+}
+
+/// Full historical backfill across main BigSeller status buckets.
+///
+/// Uses `historyOrder=true` and no `packState` filter so completed/shipped
+/// archives are included (live counts can be thousands of rows).
+pub async fn sync_historical_all(
+    pool: &PgPool,
+    api: &OrdersApi,
+    ctx: &SyncContext,
+) -> Result<Vec<SyncStats>> {
+    // Order: smaller / hot buckets first, huge completed last.
+    let buckets = [
+        "new",
+        "unpaid",
+        "platformProcessing",
+        "shipped",
+        "canceled",
+        "completed",
+    ];
+    let mut out = Vec::new();
+    for status in buckets {
+        let max_pages = match status {
+            "completed" => 500, // ~25k rows @ 50/page
+            "canceled" => 120,
+            "shipped" => 80,
+            _ => 40,
+        };
+        info!(status, max_pages, "historical bucket start");
+        match sync_status_bucket_with(
+            pool,
+            api,
+            status,
+            ctx,
+            SyncBucketOpts {
+                page_size: 50,
+                max_pages,
+                historical: true,
+                page_delay_ms: 1200,
+            },
+        )
+        .await
+        {
+            Ok(s) => {
+                info!(
+                    kind = %s.kind,
+                    pages = s.pages,
+                    upserted = s.upserted,
+                    created = s.created,
+                    "historical bucket done"
+                );
+                out.push(s);
+            }
+            Err(e) => {
+                warn!(status, error = %e, "historical bucket failed");
+            }
+        }
+        // pause between buckets
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
     }
     Ok(out)
 }

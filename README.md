@@ -84,6 +84,8 @@ cargo build --release
 ./target/release/orders sync --status new
 ./target/release/orders sync --status cancel
 ./target/release/orders sync --status all
+# full historical backfill (completed/shipped/canceled/… → Postgres)
+./target/release/orders sync --status history
 
 # long-running (two processes)
 ./target/release/orders worker

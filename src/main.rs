@@ -51,7 +51,9 @@ enum Command {
 
     /// One-shot: pull BigSeller → Postgres
     Sync {
-        /// Status bucket: new | cancel | all | <raw status>
+        /// Status bucket: new | cancel | all | history | <raw status>
+        ///
+        /// `history` = full historical backfill (completed/shipped/canceled/…).
         #[arg(long, default_value = "new")]
         status: String,
     },
@@ -154,12 +156,16 @@ async fn main() -> anyhow::Result<()> {
         } => {
             let session = SessionData::load(&cfg.session_path)?;
             let api = OrdersApi::new(&cfg.base_url, &session)?;
-            let q = OrderListQuery {
-                status,
-                page_no: page,
-                page_size,
-                ..Default::default()
+            let mut q = if matches!(
+                status.as_str(),
+                "completed" | "shipped" | "canceled" | "cancelled"
+            ) {
+                OrderListQuery::historical(&status)
+            } else {
+                OrderListQuery::active(&status)
             };
+            q.page_no = page;
+            q.page_size = page_size;
             let page = api.page_list(&q).await?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&page.raw)?);
@@ -226,6 +232,26 @@ async fn main() -> anyhow::Result<()> {
                         );
                     }
                 }
+                "history" | "historical" | "backfill" => {
+                    println!("historical backfill (historyOrder + no packState filter)…");
+                    let stats = sync::sync_historical_all(&pool, &api, &ctx).await?;
+                    let mut total_up = 0i32;
+                    let mut total_new = 0i32;
+                    for s in &stats {
+                        total_up += s.upserted;
+                        total_new += s.created;
+                        println!(
+                            "{}: pages={} upserted={} created={} state_changed={}",
+                            s.kind, s.pages, s.upserted, s.created, s.state_changed
+                        );
+                    }
+                    println!(
+                        "history done: buckets={} upserted={} created={}",
+                        stats.len(),
+                        total_up,
+                        total_new
+                    );
+                }
                 "cancel" | "canceled" | "in-cancel" => {
                     let stats = sync::sync_cancel_related(&pool, &api, &ctx).await?;
                     for s in stats {
@@ -236,7 +262,24 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
                 other => {
-                    let s = sync::sync_status_bucket(&pool, &api, other, 50, 80, &ctx).await?;
+                    // bare status name: use historical flags for archive tabs
+                    let historical = matches!(
+                        other,
+                        "completed" | "shipped" | "canceled" | "cancelled"
+                    );
+                    let s = sync::sync_status_bucket_with(
+                        &pool,
+                        &api,
+                        other,
+                        &ctx,
+                        sync::SyncBucketOpts {
+                            page_size: 50,
+                            max_pages: if historical { 500 } else { 80 },
+                            historical,
+                            page_delay_ms: if historical { 1200 } else { 0 },
+                        },
+                    )
+                    .await?;
                     println!(
                         "{}: pages={} upserted={} created={} state_changed={}",
                         s.kind, s.pages, s.upserted, s.created, s.state_changed
