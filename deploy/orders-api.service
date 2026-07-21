@@ -12,7 +12,7 @@ Environment=PATH=/home/ujang/.cargo/bin:/usr/local/bin:/usr/bin:/bin
 EnvironmentFile=-/home/ujang/projects/apps/orders/.env
 # Prefer loopback when nginx terminates TLS on the same host
 Environment=API_BIND=127.0.0.1:8080
-ExecStart=/home/ujang/projects/apps/orders/target/release/orders serve
+ExecStart=/home/ujang/projects/apps/orders/target/release/orders serve --bind 127.0.0.1:8080
 Restart=on-failure
 RestartSec=3
 # Captcha models / session stay under WorkingDirectory
