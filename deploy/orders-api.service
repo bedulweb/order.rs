@@ -1,0 +1,22 @@
+[Unit]
+Description=order.rs internal HTTP API (orders serve)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ujang
+Group=ujang
+WorkingDirectory=/home/ujang/projects/apps/orders
+Environment=PATH=/home/ujang/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=-/home/ujang/projects/apps/orders/.env
+# Prefer loopback when nginx terminates TLS on the same host
+Environment=API_BIND=127.0.0.1:8080
+ExecStart=/home/ujang/projects/apps/orders/target/release/orders serve
+Restart=on-failure
+RestartSec=3
+# Captcha models / session stay under WorkingDirectory
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

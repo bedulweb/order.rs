@@ -102,7 +102,8 @@ cargo build --release
 
 ## HTTP API (summary)
 
-Base: `http://127.0.0.1:8080` (`API_BIND`).  
+Base (local): `http://127.0.0.1:8080` (`API_BIND`).  
+Public (nginx): `https://rs.obayito.com` — see [`deploy/`](deploy/) (`setup-rs.obayito.com.sh`).  
 Auth: `Authorization: Bearer <API_TOKEN>` or `X-Api-Key: <API_TOKEN>`.
 
 | Method | Path | Description |

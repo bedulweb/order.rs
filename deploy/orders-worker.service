@@ -1,0 +1,19 @@
+[Unit]
+Description=order.rs BigSeller sync worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ujang
+Group=ujang
+WorkingDirectory=/home/ujang/projects/apps/orders
+Environment=PATH=/home/ujang/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=-/home/ujang/projects/apps/orders/.env
+ExecStart=/home/ujang/projects/apps/orders/target/release/orders worker
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
