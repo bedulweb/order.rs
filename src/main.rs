@@ -1,11 +1,12 @@
-//! CLI: login | list | counts | sync | worker | serve | doctor | ocr | status
+//! CLI: login | list | counts | sync | worker | serve | doctor | ocr | extract-order-id | status
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use orders::{
     accounts,
     api::{self, ApiState},
-    db, login, sync, CaptchaOcr, Config, OrderListQuery, OrderSummary, OrdersApi, SessionData,
+    db, login, screen_ocr, sync, CaptchaOcr, Config, OrderListQuery, OrderSummary, OrdersApi,
+    SessionData,
 };
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -67,8 +68,19 @@ enum Command {
     /// Check env, DB, session, OCR model
     Doctor,
 
-    /// OCR a local captcha image (debug)
+    /// OCR a local captcha image (debug — BigSeller captcha model)
     Ocr { path: PathBuf },
+
+    /// Extract marketplace order number from a Shopee/WA screenshot (`ocrs`)
+    ExtractOrderId {
+        path: PathBuf,
+        /// Print all OCR lines, not only the best order id
+        #[arg(long)]
+        raw: bool,
+        /// Print all candidate ids (JSON lines)
+        #[arg(long)]
+        all: bool,
+    },
 
     /// Show session file status
     Status,
@@ -286,6 +298,28 @@ async fn main() -> anyhow::Result<()> {
             let t0 = std::time::Instant::now();
             let text = ocr.classify_bytes(&bytes)?;
             println!("{text}\t{:.0?}", t0.elapsed());
+        }
+
+        Command::ExtractOrderId { path, raw, all } => {
+            let t0 = std::time::Instant::now();
+            let lines = screen_ocr::ocr_image_lines(&path)
+                .with_context(|| format!("screen OCR {}", path.display()))?;
+            if raw {
+                for line in &lines {
+                    println!("{line}");
+                }
+            }
+            let hits = screen_ocr::extract_order_ids(&lines);
+            if all {
+                for h in &hits {
+                    println!("{}\t{:?}\tlabeled={}", h.id, h.kind, h.labeled);
+                }
+            } else if let Some(best) = hits.first() {
+                println!("{}", best.id);
+            } else if !raw {
+                anyhow::bail!("no order id found in {}", path.display());
+            }
+            eprintln!("ok in {:.0?}", t0.elapsed());
         }
 
         Command::Status => match SessionData::load(&cfg.session_path) {

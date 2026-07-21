@@ -19,10 +19,12 @@ clap = { version = "4", features = ["derive", "env"] }
 dotenvy = "0.15.7"
 hex = "0.4"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+ocrs = "0.12"
 ort = "2.0.0-rc.12"
 rand = "0.8"
-reqwest = { version = "0.13", default-features = false, features = ["json", "cookies", "rustls"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "cookies", "rustls", "blocking"] }
 reqwest_cookie_store = "0.10.0"
+rten = "0.24"
 rust_decimal = { version = "1.42.1", features = ["serde-with-str"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

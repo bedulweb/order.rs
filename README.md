@@ -93,6 +93,11 @@ cargo build --release
 ./target/release/orders list --status new
 ./target/release/orders counts
 ./target/release/orders status
+
+# screenshot → marketplace order id (ocrs; models cached in ~/.cache/ocrs)
+./target/release/orders extract-order-id path/to/shopee.jpeg
+# captcha debug only (ddddocr ONNX — not for screenshots)
+./target/release/orders ocr path/to/captcha.png
 ```
 
 ## HTTP API (summary)
@@ -128,6 +133,7 @@ Authorization: Bearer <API_TOKEN>
 
 - CI runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo test`.
 - Captcha rate limits apply; space out logins.
+- **Two OCR stacks:** captcha login uses `models/common_old.onnx` (`orders ocr` / login); screenshot order ids use Rust **ocrs** (`orders extract-order-id`, models in `~/.cache/ocrs`).
 - Session file (`.session.json`) is local only; also mirrored to `bs_sessions` when DB is configured.
 - Money fields are stored as `numeric`; timestamps as `timestamptz`.
 - Do not commit `.env`, `.session.json`, or `models/*.onnx`.
