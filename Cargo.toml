@@ -23,6 +23,7 @@ ort = "2.0.0-rc.12"
 rand = "0.8"
 reqwest = { version = "0.13", default-features = false, features = ["json", "cookies", "rustls"] }
 reqwest_cookie_store = "0.10.0"
+rust_decimal = { version = "1.42.1", features = ["serde-with-str"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"

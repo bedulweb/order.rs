@@ -47,10 +47,7 @@ impl OrdersApi {
             .await?;
         client::ensure_ok(&v)?;
 
-        let page = v
-            .pointer("/data/page")
-            .cloned()
-            .unwrap_or(Value::Null);
+        let page = v.pointer("/data/page").cloned().unwrap_or(Value::Null);
 
         let rows = page
             .get("rows")
@@ -173,7 +170,13 @@ impl OrderSummary {
             ),
             amount: str_field(
                 row,
-                &["orderAmount", "payAmount", "totalAmount", "amount", "payment"],
+                &[
+                    "orderAmount",
+                    "payAmount",
+                    "totalAmount",
+                    "amount",
+                    "payment",
+                ],
             )
             .or_else(|| num_field(row, &["orderAmount", "payAmount", "totalAmount", "amount"])),
         }

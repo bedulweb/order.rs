@@ -41,8 +41,7 @@ pub async fn ensure_account(
     .bind(code)
     .bind(login)
     .fetch_optional(pool)
-    .await
-    .map_err(|e| Error::Db(e.to_string()))?;
+    .await?;
 
     if let Some(row) = existing {
         let id: i64 = row.get("id");
@@ -61,8 +60,7 @@ pub async fn ensure_account(
         .bind(login)
         .bind(display_name)
         .execute(pool)
-        .await
-        .map_err(|e| Error::Db(e.to_string()))?;
+        .await?;
 
         return Ok(Account {
             id,
@@ -87,8 +85,7 @@ pub async fn ensure_account(
     .bind(code)
     .bind(display_name)
     .fetch_one(pool)
-    .await
-    .map_err(|e| Error::Db(e.to_string()))?;
+    .await?;
 
     Ok(Account {
         id: row.get("id"),
@@ -117,8 +114,7 @@ pub async fn save_session_row(pool: &PgPool, account_id: i64, session: &SessionD
     .bind(cookies)
     .bind(&session.access_token)
     .execute(pool)
-    .await
-    .map_err(|e| Error::Db(e.to_string()))?;
+    .await?;
     Ok(())
 }
 
@@ -133,8 +129,7 @@ pub async fn mark_session_checked(pool: &PgPool, account_id: i64, valid: bool) -
     .bind(account_id)
     .bind(valid)
     .execute(pool)
-    .await
-    .map_err(|e| Error::Db(e.to_string()))?;
+    .await?;
     Ok(())
 }
 
@@ -147,8 +142,7 @@ pub async fn get_account_by_code(pool: &PgPool, code: &str) -> Result<Option<Acc
     )
     .bind(code)
     .fetch_optional(pool)
-    .await
-    .map_err(|e| Error::Db(e.to_string()))?;
+    .await?;
 
     Ok(row.map(|r| Account {
         id: r.get("id"),
@@ -163,13 +157,12 @@ pub async fn count_orders(pool: &PgPool, account_id: Option<i64>) -> Result<i64>
         sqlx::query(r#"SELECT COUNT(*)::bigint AS c FROM orders WHERE account_id = $1"#)
             .bind(aid)
             .fetch_one(pool)
-            .await
+            .await?
     } else {
         sqlx::query(r#"SELECT COUNT(*)::bigint AS c FROM orders"#)
             .fetch_one(pool)
-            .await
-    }
-    .map_err(|e| Error::Db(e.to_string()))?;
+            .await?
+    };
     Ok(row.get("c"))
 }
 
@@ -184,8 +177,7 @@ pub async fn latest_sync_summary(pool: &PgPool) -> Result<serde_json::Value> {
         "#,
     )
     .fetch_all(pool)
-    .await
-    .map_err(|e| Error::Db(e.to_string()))?;
+    .await?;
 
     let list: Vec<serde_json::Value> = rows
         .into_iter()

@@ -126,6 +126,7 @@ Authorization: Bearer <API_TOKEN>
 
 ## Notes
 
+- CI runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo test`.
 - Captcha rate limits apply; space out logins.
 - Session file (`.session.json`) is local only; also mirrored to `bs_sessions` when DB is configured.
 - Money fields are stored as `numeric`; timestamps as `timestamptz`.

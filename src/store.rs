@@ -21,10 +21,7 @@ pub async fn upsert_order(
     m: &MappedOrder,
     account_id: Option<i64>,
 ) -> Result<UpsertOutcome> {
-    let mut tx = pool
-        .begin()
-        .await
-        .map_err(|e| Error::Db(e.to_string()))?;
+    let mut tx = pool.begin().await?;
 
     sqlx::query(
         r#"
@@ -45,14 +42,12 @@ pub async fn upsert_order(
     .bind(&m.shop.name)
     .bind(&m.shop.site)
     .execute(&mut *tx)
-    .await
-    .map_err(|e| Error::Db(e.to_string()))?;
+    .await?;
 
     let prev = sqlx::query(r#"SELECT state FROM orders WHERE id = $1"#)
         .bind(m.id)
         .fetch_optional(&mut *tx)
-        .await
-        .map_err(|e| Error::Db(e.to_string()))?;
+        .await?;
 
     let (is_new, previous_state, state_changed) = match prev {
         None => (true, None, false),
@@ -196,8 +191,7 @@ pub async fn upsert_order(
     .bind(&m.payload)
     .bind(&m.payload_hash)
     .execute(&mut *tx)
-    .await
-    .map_err(|e| Error::Db(e.to_string()))?;
+    .await?;
 
     if state_changed {
         if let Some(ref from) = previous_state {
@@ -211,16 +205,14 @@ pub async fn upsert_order(
             .bind(from)
             .bind(&m.state)
             .execute(&mut *tx)
-            .await
-            .map_err(|e| Error::Db(e.to_string()))?;
+            .await?;
         }
     }
 
     sqlx::query(r#"DELETE FROM order_items WHERE order_id = $1"#)
         .bind(m.id)
         .execute(&mut *tx)
-        .await
-        .map_err(|e| Error::Db(e.to_string()))?;
+        .await?;
 
     for it in &m.items {
         let amt = money_str(it.amount);
@@ -279,8 +271,7 @@ pub async fn upsert_order(
         .bind(it.product_type)
         .bind(&it.payload)
         .execute(&mut *tx)
-        .await
-        .map_err(|e| Error::Db(e.to_string()))?;
+        .await?;
     }
 
     if is_new {
@@ -307,12 +298,11 @@ pub async fn upsert_order(
         .bind(&notify_payload)
         .bind(account_id)
         .execute(&mut *tx)
-        .await
-        .map_err(|e| Error::Db(e.to_string()))?;
+        .await?;
         debug!(order_id = m.id, "enqueued order.created");
     }
 
-    tx.commit().await.map_err(|e| Error::Db(e.to_string()))?;
+    tx.commit().await?;
 
     Ok(UpsertOutcome {
         order_id: m.id,
@@ -329,8 +319,7 @@ pub async fn begin_sync_run(pool: &PgPool, kind: &str, account_id: Option<i64>) 
     .bind(kind)
     .bind(account_id)
     .fetch_one(pool)
-    .await
-    .map_err(|e| Error::Db(e.to_string()))?;
+    .await?;
     Ok(row.get("id"))
 }
 
@@ -362,8 +351,7 @@ pub async fn finish_sync_run(
     .bind(error_text)
     .bind(meta)
     .execute(pool)
-    .await
-    .map_err(|e| Error::Db(e.to_string()))?;
+    .await?;
     Ok(())
 }
 
@@ -457,8 +445,7 @@ pub async fn find_by_platform_order_id(
     .bind(platform)
     .bind(account_id)
     .fetch_all(pool)
-    .await
-    .map_err(|e| Error::Db(e.to_string()))?;
+    .await?;
 
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
@@ -512,8 +499,7 @@ async fn load_items(pool: &PgPool, order_id: i64) -> Result<Vec<OrderItemDto>> {
     )
     .bind(order_id)
     .fetch_all(pool)
-    .await
-    .map_err(|e| Error::Db(e.to_string()))?;
+    .await?;
 
     Ok(rows
         .into_iter()
@@ -575,7 +561,7 @@ pub async fn cancel_daily_report(
 ) -> Result<CancelDailyReport> {
     let start_utc = date
         .and_hms_opt(0, 0, 0)
-        .unwrap()
+        .ok_or_else(|| Error::Other(format!("invalid calendar date bounds for {date}")))?
         .and_utc()
         - chrono::Duration::hours(tz_offset_hours as i64);
     let end_utc = start_utc + chrono::Duration::days(1);
@@ -605,8 +591,7 @@ pub async fn cancel_daily_report(
     .bind(start_utc)
     .bind(end_utc)
     .fetch_all(pool)
-    .await
-    .map_err(|e| Error::Db(e.to_string()))?;
+    .await?;
 
     let mut orders = Vec::with_capacity(rows.len());
     let mut printed_collect = 0i64;
@@ -618,10 +603,7 @@ pub async fn cancel_daily_report(
         let pc: Option<i16> = row.get("print_collect_mark");
         let pb: Option<i16> = row.get("print_bill_mark");
         let pp: Option<i16> = row.get("print_pick_list_mark");
-        let any = [pl, pc, pb, pp]
-            .into_iter()
-            .flatten()
-            .any(|m| m != 0);
+        let any = [pl, pc, pb, pp].into_iter().flatten().any(|m| m != 0);
         if pc.unwrap_or(0) != 0 {
             printed_collect += 1;
         }
@@ -691,8 +673,7 @@ pub async fn list_events_since(
     .bind(since_id)
     .bind(limit.clamp(1, 500))
     .fetch_all(pool)
-    .await
-    .map_err(|e| Error::Db(e.to_string()))?;
+    .await?;
 
     Ok(rows
         .into_iter()
@@ -722,8 +703,7 @@ pub async fn claim_pending_outbox(pool: &PgPool, limit: i64) -> Result<Vec<Outbo
     )
     .bind(limit.clamp(1, 100))
     .fetch_all(pool)
-    .await
-    .map_err(|e| Error::Db(e.to_string()))?;
+    .await?;
 
     Ok(rows
         .into_iter()
@@ -750,8 +730,7 @@ pub async fn mark_outbox_sent(pool: &PgPool, id: i64) -> Result<()> {
     )
     .bind(id)
     .execute(pool)
-    .await
-    .map_err(|e| Error::Db(e.to_string()))?;
+    .await?;
     Ok(())
 }
 
@@ -769,8 +748,7 @@ pub async fn mark_outbox_failed(pool: &PgPool, id: i64, err: &str) -> Result<()>
     .bind(id)
     .bind(err)
     .execute(pool)
-    .await
-    .map_err(|e| Error::Db(e.to_string()))?;
+    .await?;
     Ok(())
 }
 
@@ -778,8 +756,7 @@ pub async fn get_cursor(pool: &PgPool, key: &str) -> Result<Option<Value>> {
     let row = sqlx::query(r#"SELECT value FROM sync_cursors WHERE key = $1"#)
         .bind(key)
         .fetch_optional(pool)
-        .await
-        .map_err(|e| Error::Db(e.to_string()))?;
+        .await?;
     Ok(row.map(|r| r.get("value")))
 }
 
@@ -794,7 +771,6 @@ pub async fn set_cursor(pool: &PgPool, key: &str, value: Value) -> Result<()> {
     .bind(key)
     .bind(value)
     .execute(pool)
-    .await
-    .map_err(|e| Error::Db(e.to_string()))?;
+    .await?;
     Ok(())
 }

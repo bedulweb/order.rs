@@ -1,8 +1,10 @@
 //! Map BigSeller `pageList` JSON rows → typed structs for Postgres upsert.
 
 use chrono::{DateTime, TimeZone, Utc};
+use rust_decimal::Decimal;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::str::FromStr;
 
 #[derive(Debug, Clone)]
 pub struct MappedShop {
@@ -20,9 +22,9 @@ pub struct MappedItem {
     pub variant_attr: Option<String>,
     pub item_name: Option<String>,
     pub quantity: i32,
-    pub amount: Option<f64>,
-    pub unit_price: Option<f64>,
-    pub original_price: Option<f64>,
+    pub amount: Option<Decimal>,
+    pub unit_price: Option<Decimal>,
+    pub original_price: Option<Decimal>,
     pub image_url: Option<String>,
     pub product_url: Option<String>,
     pub platform_item_id: Option<String>,
@@ -46,7 +48,7 @@ pub struct MappedOrder {
     pub view_status: Option<String>,
     pub marketplace_state: Option<String>,
     pub last_order_status: Option<String>,
-    pub amount: Option<f64>,
+    pub amount: Option<Decimal>,
     pub currency: Option<String>,
     pub payment_method: Option<String>,
     pub buyer_username: Option<String>,
@@ -188,7 +190,10 @@ fn map_item(it: &Value, line_no: i32) -> Option<MappedItem> {
         platform_variation_id: as_string(it.get("platformVariationId")),
         inventory_sku: as_string(it.get("inventorySku")),
         is_addition: as_i64(it.get("isAddition")).unwrap_or(0) != 0
-            || it.get("isAddition").and_then(|v| v.as_bool()).unwrap_or(false),
+            || it
+                .get("isAddition")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
         product_type: as_i64(it.get("productType")).map(|n| n as i32),
         payload: it.clone(),
     })
@@ -238,25 +243,41 @@ fn empty_to_none(s: Option<String>) -> Option<String> {
     s.filter(|x| !x.is_empty())
 }
 
-pub fn as_money(v: Option<&Value>) -> Option<f64> {
+/// Parse money from JSON number or string without going through `f64`.
+pub fn as_money(v: Option<&Value>) -> Option<Decimal> {
     let v = v?;
     if v.is_null() {
         return None;
-    }
-    if let Some(n) = v.as_f64() {
-        return Some(n);
-    }
-    if let Some(n) = v.as_i64() {
-        return Some(n as f64);
     }
     if let Some(s) = v.as_str() {
         let t = s.trim();
         if t.is_empty() {
             return None;
         }
-        return t.parse().ok();
+        return Decimal::from_str_exact(t)
+            .or_else(|_| Decimal::from_str(t))
+            .ok();
+    }
+    if let Some(n) = v.as_i64() {
+        return Some(Decimal::from(n));
+    }
+    if let Some(n) = v.as_u64() {
+        return Some(Decimal::from(n));
+    }
+    // JSON numbers that serde_json only exposes as f64 (no integer form).
+    // Prefer string round-trip via Display to reduce binary float artifacts.
+    if let Some(n) = v.as_f64() {
+        if !n.is_finite() {
+            return None;
+        }
+        return Decimal::from_str(&n.to_string()).ok();
     }
     None
+}
+
+/// Bind `Numeric` via string to avoid float drift on the wire.
+pub fn money_str(v: Option<Decimal>) -> Option<String> {
+    v.map(|d| d.normalize().to_string())
 }
 
 /// BigSeller epochs: usually ms; small values treated as seconds.
@@ -275,14 +296,47 @@ pub fn as_ts(v: Option<&Value>) -> Option<DateTime<Utc>> {
     Utc.timestamp_millis_opt(ms).single()
 }
 
-/// sqlx `Numeric` via string to avoid float drift in DB wire format.
-pub fn money_str(v: Option<f64>) -> Option<String> {
-    v.map(|n| {
-        // Keep up to 2 decimal places for IDR-ish amounts; still OK for decimals.
-        if (n - n.round()).abs() < f64::EPSILON {
-            format!("{}", n as i64)
-        } else {
-            format!("{n:.4}")
-        }
-    })
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn dec(s: &str) -> Decimal {
+        Decimal::from_str(s).unwrap()
+    }
+
+    #[test]
+    fn as_money_integer_string() {
+        assert_eq!(as_money(Some(&json!("104848"))), Some(dec("104848")));
+    }
+
+    #[test]
+    fn as_money_fractional_string() {
+        assert_eq!(as_money(Some(&json!("104848.50"))), Some(dec("104848.50")));
+    }
+
+    #[test]
+    fn as_money_empty_string_is_none() {
+        assert_eq!(as_money(Some(&json!(""))), None);
+        assert_eq!(as_money(Some(&json!("   "))), None);
+    }
+
+    #[test]
+    fn as_money_integer_json() {
+        assert_eq!(as_money(Some(&json!(104848))), Some(dec("104848")));
+    }
+
+    #[test]
+    fn money_str_preserves_decimal() {
+        // normalize() drops trailing zeros; value is still exact for Postgres numeric.
+        assert_eq!(
+            money_str(Some(dec("104848.50"))).as_deref(),
+            Some("104848.5")
+        );
+        assert_eq!(money_str(Some(dec("104848"))).as_deref(), Some("104848"));
+        assert_eq!(
+            Decimal::from_str(money_str(Some(dec("104848.50"))).as_deref().unwrap()).unwrap(),
+            dec("104848.50")
+        );
+    }
 }

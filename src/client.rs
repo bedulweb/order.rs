@@ -168,10 +168,9 @@ pub fn api_msg(v: &Value) -> String {
 pub fn ensure_ok(v: &Value) -> Result<()> {
     match api_code(v) {
         Some(0) => Ok(()),
-        Some(code) if is_auth_expired_code(code) => Err(Error::AuthExpired(format!(
-            "{code}: {}",
-            api_msg(v)
-        ))),
+        Some(code) if is_auth_expired_code(code) => {
+            Err(Error::AuthExpired(format!("{code}: {}", api_msg(v))))
+        }
         Some(code) => Err(Error::Api {
             code,
             message: api_msg(v),

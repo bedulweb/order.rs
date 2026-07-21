@@ -24,11 +24,7 @@ pub async fn login(cfg: &Config, ocr: &CaptchaOcr) -> Result<LoginResult> {
     let http = HttpClient::new(&cfg.base_url)?;
 
     // Warm locale / session cookies from the login page.
-    let _ = http
-        .inner
-        .get(http.url("/en_US/login.htm"))
-        .send()
-        .await?;
+    let _ = http.inner.get(http.url("/en_US/login.htm")).send().await?;
 
     let mut last_message = String::from("no attempt");
 
@@ -151,9 +147,7 @@ pub async fn login(cfg: &Config, ocr: &CaptchaOcr) -> Result<LoginResult> {
 }
 
 async fn fetch_captcha(http: &HttpClient) -> Result<(String, Vec<u8>)> {
-    let v = http
-        .get_json("/api_v2/api/v2/genVerifyCode.json")
-        .await?;
+    let v = http.get_json("/api_v2/api/v2/genVerifyCode.json").await?;
 
     if client::api_code(&v) != Some(0) {
         return Err(Error::Api {

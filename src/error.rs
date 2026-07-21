@@ -39,8 +39,8 @@ pub enum Error {
     #[error("image: {0}")]
     Image(#[from] image::ImageError),
 
-    #[error("database: {0}")]
-    Db(String),
+    #[error(transparent)]
+    Db(#[from] sqlx::Error),
 
     #[error("{0}")]
     Other(String),

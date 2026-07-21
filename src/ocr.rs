@@ -66,10 +66,7 @@ impl CaptchaOcr {
         {
             let dynimg = image::DynamicImage::ImageLuma8(img);
             dynimg
-                .write_to(
-                    &mut std::io::Cursor::new(&mut png),
-                    image::ImageFormat::Png,
-                )
+                .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
                 .map_err(|e| Error::Ocr(e.to_string()))?;
         }
         let _ = self.classify_bytes(&png)?;
@@ -168,13 +165,7 @@ mod tests {
     #[test]
     fn ctc_simple() {
         // one timestep, class 3 wins; charset[3] = "a"
-        let charset = vec![
-            "".into(),
-            "x".into(),
-            "y".into(),
-            "a".into(),
-            "b".into(),
-        ];
+        let charset = vec!["".into(), "x".into(), "y".into(), "a".into(), "b".into()];
         // shape [1,1,5], logits favor index 3
         let logits = [0.0f32, 0.1, 0.2, 9.0, 0.3];
         let shape = [1i64, 1, 5];

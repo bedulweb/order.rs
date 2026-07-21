@@ -29,19 +29,10 @@ pub struct SyncStats {
 }
 
 /// Context for a single BigSeller tenant sync.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SyncContext {
     pub account_id: Option<i64>,
     pub account_code: Option<String>,
-}
-
-impl Default for SyncContext {
-    fn default() -> Self {
-        Self {
-            account_id: None,
-            account_code: None,
-        }
-    }
 }
 
 /// Sync one status bucket (all pages).
@@ -88,8 +79,7 @@ pub async fn sync_status_bucket(
                     warn!("skip unmappable order row");
                     continue;
                 };
-                let outcome: UpsertOutcome =
-                    upsert_order(pool, &mapped, ctx.account_id).await?;
+                let outcome: UpsertOutcome = upsert_order(pool, &mapped, ctx.account_id).await?;
                 upserted += 1;
                 if outcome.is_new {
                     created += 1;
@@ -355,15 +345,7 @@ pub async fn run_worker(pool: PgPool, cfg: Config, app_cfg: WorkerConfig) -> Res
         "worker starting"
     );
 
-    let session = SessionData::load(&cfg.session_path).or_else(|e| {
-        if app_cfg.auto_relogin {
-            Err(e)
-        } else {
-            Err(e)
-        }
-    });
-
-    let api = match session {
+    let api = match SessionData::load(&cfg.session_path) {
         Ok(s) => OrdersApi::new(&cfg.base_url, &s)?,
         Err(_) if app_cfg.auto_relogin => {
             // Will login on first ensure_api
@@ -388,8 +370,7 @@ pub async fn run_worker(pool: PgPool, cfg: Config, app_cfg: WorkerConfig) -> Res
     };
 
     let mut last_cancel_day: Option<u32> = None;
-    let mut tick =
-        tokio::time::interval(std::time::Duration::from_secs(app_cfg.new_interval_secs));
+    let mut tick = tokio::time::interval(std::time::Duration::from_secs(app_cfg.new_interval_secs));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
@@ -417,7 +398,8 @@ pub async fn run_worker(pool: PgPool, cfg: Config, app_cfg: WorkerConfig) -> Res
         let yday = now.ordinal();
         let due = now.time()
             >= NaiveTime::from_hms_opt(app_cfg.cancel_hour_local, app_cfg.cancel_minute_local, 0)
-                .unwrap_or_else(|| NaiveTime::from_hms_opt(17, 0, 0).unwrap());
+                .or_else(|| NaiveTime::from_hms_opt(17, 0, 0))
+                .unwrap_or(NaiveTime::MIN);
         if due && last_cancel_day != Some(yday) {
             info!("running evening cancel-related sync");
             match state.run_cancel_sync(&ctx).await {

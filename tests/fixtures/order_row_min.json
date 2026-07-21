@@ -1,0 +1,42 @@
+{
+  "id": 14459756009,
+  "shopId": 2001903,
+  "shopName": "REDACTED_SHOP",
+  "platformOrderId": "2607206K6S67BG",
+  "state": "new",
+  "marketPlaceState": "To Process(New)",
+  "viewStatus": "New",
+  "lastOrderStatus": "New",
+  "packageNo": "BS2798049528",
+  "packageIndex": "0",
+  "amount": "104848",
+  "amountUnit": "IDR",
+  "platform": "shopee",
+  "buyerUsername": "redacted.buyer",
+  "paymentMethod": "Prepaid",
+  "contactPerson": "R****D",
+  "recipient": "JAWA BARAT, Indonesia",
+  "orderCreateTime": 1784552788000,
+  "payTime": 1784552834000,
+  "shippedTime": 1784678399000,
+  "itemTotalNum": 1,
+  "printLabelMark": 0,
+  "printCollectMark": 1,
+  "orderItemList": [
+    {
+      "id": 10539301694,
+      "varSku": "OB-0136-3",
+      "sku": null,
+      "varAttr": "3",
+      "itemName": null,
+      "quantity": 1,
+      "amount": "115000",
+      "itemPrice": null,
+      "originalPrice": null,
+      "imgUrl": null,
+      "platformItemId": "45461362668",
+      "isAddition": 0
+    }
+  ],
+  "errorMsg": ""
+}

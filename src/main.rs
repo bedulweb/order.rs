@@ -3,8 +3,9 @@
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use orders::{
-    accounts, api::{self, ApiState}, db, login, sync, CaptchaOcr, Config, OrderListQuery,
-    OrderSummary, OrdersApi, SessionData,
+    accounts,
+    api::{self, ApiState},
+    db, login, sync, CaptchaOcr, Config, OrderListQuery, OrderSummary, OrdersApi, SessionData,
 };
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -81,9 +82,11 @@ async fn main() -> anyhow::Result<()> {
     }
 
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-            EnvFilter::new("info,ort=error,ort::logging=error,ort_sys=error")
-        }))
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                EnvFilter::new("info,ort=error,ort::logging=error,ort_sys=error")
+            }),
+        )
         .init();
 
     let cli = Cli::parse();
@@ -117,7 +120,8 @@ async fn main() -> anyhow::Result<()> {
                 match db::connect(db_url).await {
                     Ok(pool) => match sync::bootstrap_account(&pool, &cfg).await {
                         Ok(acct) => {
-                            let _ = accounts::save_session_row(&pool, acct.id, &result.session).await;
+                            let _ =
+                                accounts::save_session_row(&pool, acct.id, &result.session).await;
                             println!(
                                 "account: id={} code={} login={}",
                                 acct.id, acct.code, acct.login_account
@@ -220,8 +224,7 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
                 other => {
-                    let s =
-                        sync::sync_status_bucket(&pool, &api, other, 50, 80, &ctx).await?;
+                    let s = sync::sync_status_bucket(&pool, &api, other, 50, 80, &ctx).await?;
                     println!(
                         "{}: pages={} upserted={} created={} state_changed={}",
                         s.kind, s.pages, s.upserted, s.created, s.state_changed
@@ -279,8 +282,7 @@ async fn main() -> anyhow::Result<()> {
             cfg.validate_paths()?;
             let ocr = CaptchaOcr::load(&cfg.model_path, &cfg.charset_path, cfg.ocr_threads)?;
             ocr.warmup()?;
-            let bytes =
-                std::fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+            let bytes = std::fs::read(&path).with_context(|| format!("read {}", path.display()))?;
             let t0 = std::time::Instant::now();
             let text = ocr.classify_bytes(&bytes)?;
             println!("{text}\t{:.0?}", t0.elapsed());
@@ -329,25 +331,34 @@ async fn run_doctor(cfg: &Config) -> anyhow::Result<()> {
 
     // Env
     let checks = [
-        ("BS_ACCOUNT", cfg.account.as_ref().map(|s| !s.is_empty()).unwrap_or(false)),
+        (
+            "BS_ACCOUNT",
+            cfg.account.as_ref().map(|s| !s.is_empty()).unwrap_or(false),
+        ),
         (
             "BS_PASSWORD",
-            cfg.password.as_ref().map(|s| !s.is_empty()).unwrap_or(false),
+            cfg.password
+                .as_ref()
+                .map(|s| !s.is_empty())
+                .unwrap_or(false),
         ),
         (
             "DATABASE_URL",
-            cfg.database_url.as_ref().map(|s| !s.is_empty()).unwrap_or(false),
+            cfg.database_url
+                .as_ref()
+                .map(|s| !s.is_empty())
+                .unwrap_or(false),
         ),
         (
             "API_TOKEN",
-            cfg.api_token.as_ref().map(|s| !s.is_empty()).unwrap_or(false),
+            cfg.api_token
+                .as_ref()
+                .map(|s| !s.is_empty())
+                .unwrap_or(false),
         ),
     ];
     for (name, good) in checks {
-        println!(
-            "  env {name}: {}",
-            if good { "ok" } else { "MISSING" }
-        );
+        println!("  env {name}: {}", if good { "ok" } else { "MISSING" });
         if !good && name != "API_TOKEN" {
             // API_TOKEN warning only
             if name != "API_TOKEN" {
@@ -366,10 +377,7 @@ async fn run_doctor(cfg: &Config) -> anyhow::Result<()> {
         cfg.account_code.as_deref().unwrap_or("default")
     );
     println!("  AUTO_RELOGIN: {}", cfg.auto_relogin);
-    println!(
-        "  SYNC_NEW_INTERVAL_SECS: {}",
-        cfg.sync_new_interval_secs
-    );
+    println!("  SYNC_NEW_INTERVAL_SECS: {}", cfg.sync_new_interval_secs);
     println!(
         "  CANCEL local: {:02}:{:02}",
         cfg.cancel_hour_local, cfg.cancel_minute_local
@@ -377,10 +385,7 @@ async fn run_doctor(cfg: &Config) -> anyhow::Result<()> {
 
     // Paths
     match cfg.validate_paths() {
-        Ok(()) => println!(
-            "  OCR model: ok ({})",
-            cfg.model_path.display()
-        ),
+        Ok(()) => println!("  OCR model: ok ({})", cfg.model_path.display()),
         Err(e) => {
             println!("  OCR model: FAIL ({e})");
             ok = false;

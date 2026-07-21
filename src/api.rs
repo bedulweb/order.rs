@@ -61,9 +61,9 @@ pub async fn serve(state: ApiState, bind: SocketAddr) -> crate::error::Result<()
 async fn health(State(st): State<ApiState>) -> impl IntoResponse {
     match crate::db::ping(&st.pool).await {
         Ok(()) => (StatusCode::OK, Json(json!({ "ok": true }))),
-        Err(e) => (
+        Err(_) => (
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({ "ok": false, "error": e.to_string() })),
+            Json(json!({ "ok": false, "error": "database unavailable" })),
         ),
     }
 }
@@ -110,9 +110,14 @@ async fn resolve_account_id(
     let Some(code) = account_code.map(str::trim).filter(|s| !s.is_empty()) else {
         return Ok(None);
     };
-    match get_account_by_code(pool, code).await.map_err(ApiError::from)? {
+    match get_account_by_code(pool, code)
+        .await
+        .map_err(ApiError::from)?
+    {
         Some(a) => Ok(Some(a.id)),
-        None => Err(ApiError::BadRequest(format!("unknown account code: {code}"))),
+        None => Err(ApiError::BadRequest(format!(
+            "unknown account code: {code}"
+        ))),
     }
 }
 
@@ -137,15 +142,10 @@ async fn lookup_by_platform_id(
         return Err(ApiError::BadRequest("platform_order_id required".into()));
     }
     let account_id = resolve_account_id(&st.pool, q.account.as_deref()).await?;
-    let found = find_by_platform_order_id(
-        &st.pool,
-        id,
-        q.shop_id,
-        q.platform.as_deref(),
-        account_id,
-    )
-    .await
-    .map_err(ApiError::from)?;
+    let found =
+        find_by_platform_order_id(&st.pool, id, q.shop_id, q.platform.as_deref(), account_id)
+            .await
+            .map_err(ApiError::from)?;
 
     if found.is_empty() {
         return Err(ApiError::NotFound);
@@ -242,17 +242,21 @@ enum ApiError {
 
 impl From<crate::error::Error> for ApiError {
     fn from(e: crate::error::Error) -> Self {
-        ApiError::Internal(e.to_string())
+        // Never echo raw sqlx/DB diagnostics (may include connection URLs).
+        let message = match &e {
+            crate::error::Error::Db(_) => "database error".into(),
+            other => other.to_string(),
+        };
+        ApiError::Internal(message)
     }
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, body) = match self {
-            ApiError::Unauthorized => (
-                StatusCode::UNAUTHORIZED,
-                json!({ "error": "unauthorized" }),
-            ),
+            ApiError::Unauthorized => {
+                (StatusCode::UNAUTHORIZED, json!({ "error": "unauthorized" }))
+            }
             ApiError::NotFound => (
                 StatusCode::NOT_FOUND,
                 json!({
