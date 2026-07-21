@@ -44,12 +44,10 @@ src/
   ...
 docs/
   public-api.md     HTTP contract
-  api-map.md        BigSeller reverse notes
+  secrets.md        credentials (.env)
   sql/              Postgres migrations
-  secrets.md        Infisical / credentials
 scripts/
   fetch-model.sh
-  push-secrets-infisical.sh
 ```
 
 ## Prerequisites
@@ -57,38 +55,7 @@ scripts/
 - Rust 1.75+
 - PostgreSQL (Neon URL)
 - OCR model: `models/common_old.onnx` (see `scripts/fetch-model.sh`)
-- Credentials via **Infisical** (preferred) or local `.env` (gitignored)
-
-## Secrets (Infisical)
-
-Do not commit `.env` or session files. Store secrets in Infisical and inject at runtime:
-
-```bash
-# once: link project (creates .infisical.json)
-infisical init
-
-# upload current local .env into Infisical (dev)
-./scripts/push-secrets-infisical.sh
-
-# run with secrets injected
-infisical run --env=dev -- ./target/release/orders doctor
-infisical run --env=dev -- ./target/release/orders worker
-infisical run --env=dev -- ./target/release/orders serve
-```
-
-Details: [docs/secrets.md](docs/secrets.md). Template keys: [.env.example](.env.example).
-
-Required secret names:
-
-| Name | Purpose |
-|------|---------|
-| `BS_ACCOUNT` | BigSeller login |
-| `BS_PASSWORD` | BigSeller password |
-| `DATABASE_URL` | Neon Postgres |
-| `API_TOKEN` | Bearer token for HTTP API |
-| `BS_ACCOUNT_CODE` | Tenant slug (default `default`) |
-
-Optional: `API_BIND`, `SYNC_NEW_INTERVAL_SECS`, `CANCEL_HOUR_LOCAL`, `AUTO_RELOGIN`, `WA_WEBHOOK_URL`, `WA_WEBHOOK_TOKEN`.
+- Local **`.env`** (gitignored) — see [.env.example](.env.example) and [docs/secrets.md](docs/secrets.md)
 
 ## Setup
 
@@ -97,7 +64,8 @@ git clone https://github.com/bedulweb/order.rs.git
 cd order.rs
 
 ./scripts/fetch-model.sh
-cp .env.example .env   # or: infisical export --env=dev > .env
+cp .env.example .env
+# fill BS_ACCOUNT, BS_PASSWORD, DATABASE_URL, API_TOKEN
 
 # apply SQL once (Neon)
 psql "$DATABASE_URL" -f docs/sql/001_init.sql

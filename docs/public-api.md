@@ -142,4 +142,4 @@ orders worker
 orders serve
 ```
 
-Env template: `.env.example`. Credentials: [secrets.md](secrets.md).
+Env template: `.env.example`. Put real values in local `.env` (gitignored). See [secrets.md](secrets.md).
