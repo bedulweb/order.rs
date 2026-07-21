@@ -1,0 +1,47 @@
+[package]
+name = "orders"
+version = "0.1.0"
+edition = "2021"
+description = "BigSeller login + orders API client (DIY ddddocr OCR)"
+license = "MIT"
+repository = "https://github.com/bedulweb/order.rs"
+readme = "README.md"
+rust-version = "1.75"
+
+[dependencies]
+aes = "0.8"
+anyhow = "1"
+axum = { version = "0.8", features = ["macros"] }
+base64 = "0.22"
+cbc = { version = "0.1", features = ["alloc"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
+clap = { version = "4", features = ["derive", "env"] }
+dotenvy = "0.15.7"
+hex = "0.4"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+ort = "2.0.0-rc.12"
+rand = "0.8"
+reqwest = { version = "0.13", default-features = false, features = ["json", "cookies", "rustls"] }
+reqwest_cookie_store = "0.10.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "tls-rustls-ring",
+    "postgres",
+    "chrono",
+    "json",
+    "macros",
+] }
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "time", "signal"] }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = "2.5.8"
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

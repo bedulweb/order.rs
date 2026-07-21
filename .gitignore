@@ -1,0 +1,40 @@
+# Build
+/target/
+**/*.rs.bk
+
+# Secrets and local env (never commit)
+.env
+.env.*
+!.env.example
+.secrets.env
+*.pem
+*.key
+
+# BigSeller session cookies / tokens
+.session.json
+*.session.json
+sessions/
+
+# OCR model weights (large; fetch via scripts/fetch-model.sh)
+models/*.onnx
+!models/.gitkeep
+
+# Infisical local overrides (workspace id is committed via .infisical.json)
+.infisical.local.json
+
+# Tooling / capture artifacts
+.playwright-cli/
+.playwright/
+*.log
+/tmp/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# Agent skill copies (optional local)
+.agents/
+skills-lock.json
