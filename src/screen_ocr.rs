@@ -85,10 +85,22 @@ fn engine_cached() -> Result<&'static OcrEngine> {
 
 /// OCR an image file; returns non-empty text lines (order roughly top→bottom).
 pub fn ocr_image_lines(path: &Path) -> Result<Vec<String>> {
-    let engine = engine_cached()?;
     let img = image::open(path)
         .map_err(|e| Error::Ocr(format!("open image: {e}")))?
         .into_rgb8();
+    ocr_rgb8_lines(&img)
+}
+
+/// OCR raw image bytes (JPEG/PNG/WebP/…); returns non-empty text lines.
+pub fn ocr_image_bytes(bytes: &[u8]) -> Result<Vec<String>> {
+    let img = image::load_from_memory(bytes)
+        .map_err(|e| Error::Ocr(format!("decode image: {e}")))?
+        .into_rgb8();
+    ocr_rgb8_lines(&img)
+}
+
+fn ocr_rgb8_lines(img: &image::RgbImage) -> Result<Vec<String>> {
+    let engine = engine_cached()?;
     let src = ImageSource::from_bytes(img.as_raw(), img.dimensions())
         .map_err(|e| Error::Ocr(format!("image source: {e}")))?;
     let input = engine
@@ -106,6 +118,12 @@ pub fn ocr_image_lines(path: &Path) -> Result<Vec<String>> {
 }
 
 /// Best-effort order id candidates from OCR lines (Shopee / marketplace screenshots).
+///
+/// Patterns from live `platform_order_id` (Postgres backfill sample):
+/// - **Shopee** (~99.7%): 14 chars = `YYMMDD` + 8 alnum, uppercase
+///   e.g. `2607206K6S67BG`. Rare: 19 chars.
+/// - **TikTok** (100% in sample): exactly 18 digits, e.g. `585115262532748712`.
+/// - **Not** order id: BigSeller `package_no` like `BS2798049528`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OrderIdHit {
     pub id: String,
@@ -116,9 +134,9 @@ pub struct OrderIdHit {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OrderIdKind {
-    /// e.g. `260715PS7HRGC0` (platform / Shopee style)
+    /// Shopee-style: `YYMMDD` + alnum tail (usually 14 chars total).
     Alphanumeric,
-    /// e.g. `584161174119548779`
+    /// TikTok-style long numeric (usually exactly 18 digits).
     NumericLong,
 }
 
@@ -194,10 +212,10 @@ fn scan_ids(line: &str) -> Vec<(String, OrderIdKind)> {
     // Prefer whitespace-separated tokens so "5841…779 TT" does not glue into one id.
     for tok in line.split_whitespace() {
         let t = tok.trim_matches(|c: char| !c.is_ascii_alphanumeric());
-        if t.is_empty() {
+        if t.is_empty() || is_bigseller_package_no(t) {
             continue;
         }
-        if (15..=22).contains(&t.len()) && t.bytes().all(|c| c.is_ascii_digit()) {
+        if is_tiktok_style_id(t) {
             out.push((t.to_string(), OrderIdKind::NumericLong));
         } else if is_shopee_style_id(t) {
             out.push((t.to_string(), OrderIdKind::Alphanumeric));
@@ -208,9 +226,26 @@ fn scan_ids(line: &str) -> Vec<(String, OrderIdKind)> {
         out.push((m, OrderIdKind::NumericLong));
     }
     for m in regex_alpha_ids(line) {
-        out.push((m, OrderIdKind::Alphanumeric));
+        if !is_bigseller_package_no(&m) {
+            out.push((m, OrderIdKind::Alphanumeric));
+        }
     }
     out
+}
+
+/// BigSeller internal package id (`package_no`), not marketplace order no.
+fn is_bigseller_package_no(tok: &str) -> bool {
+    let b = tok.as_bytes();
+    b.len() >= 4
+        && b[0].eq_ignore_ascii_case(&b'B')
+        && b[1].eq_ignore_ascii_case(&b'S')
+        && b[2..].iter().all(|c| c.is_ascii_digit())
+}
+
+/// TikTok `platform_order_id`: always 18 digits in backfill (allow 17–19 for OCR slip).
+fn is_tiktok_style_id(tok: &str) -> bool {
+    let len = tok.len();
+    (17..=19).contains(&len) && tok.bytes().all(|c| c.is_ascii_digit())
 }
 
 fn regex_digit_ids(s: &str) -> Vec<String> {
@@ -224,7 +259,7 @@ fn regex_digit_ids(s: &str) -> Vec<String> {
                 i += 1;
             }
             let len = i - start;
-            if (15..=22).contains(&len) {
+            if (17..=19).contains(&len) {
                 out.push(s[start..i].to_string());
             }
         } else {
@@ -256,33 +291,52 @@ fn regex_alpha_ids(s: &str) -> Vec<String> {
     out
 }
 
+/// Shopee `platform_order_id` from DB (~5k sample):
+/// - **14 chars** (dominant): `^\d{6}[A-Z0-9]{8}$`
+/// - **19 chars** (rare): `^\d{6}[A-Z0-9]{13}$`
+///
+/// Tail may be letter-light (e.g. `250911833646S0`); length + prefix is enough.
 fn is_shopee_style_id(tok: &str) -> bool {
-    let b = tok.as_bytes();
-    if b.len() < 12 || b.len() > 18 {
+    if is_bigseller_package_no(tok) {
         return false;
     }
-    // starts with 6 digits (date-ish)
-    if !b[..6].iter().all(|c| c.is_ascii_digit()) {
+    let b = tok.as_bytes();
+    let n = b.len();
+    // Canonical 14 / rare 19; allow 13–15 for single OCR insert/delete on the common form.
+    if !matches!(n, 13 | 14 | 15 | 19) {
+        return false;
+    }
+    if !b.iter().all(|c| c.is_ascii_alphanumeric()) {
+        return false;
+    }
+    if n < 6 || !b[..6].iter().all(|c| c.is_ascii_digit()) {
         return false;
     }
     let letters = b.iter().filter(|c| c.is_ascii_alphabetic()).count();
     let digits = b.iter().filter(|c| c.is_ascii_digit()).count();
-    // Real Shopee ids mix several letters (e.g. PS7HRGC0), not "digits + TT" OCR junk.
-    if letters < 3 {
+    // Must contain at least one letter (pure numeric → TikTok path).
+    if letters == 0 {
         return false;
     }
-    // Reject mostly-numeric tokens with a couple trailing letters glued on.
-    if digits * 100 / b.len() > 75 {
+    // Exact canonical lengths: trust structure (covers letter-light real ids).
+    if n == 14 || n == 19 {
+        return true;
+    }
+    // Off-by-one OCR: still require a bit of letter mix.
+    if letters < 2 {
         return false;
     }
-    b.iter().all(|c| c.is_ascii_alphanumeric())
+    if digits * 100 / n > 85 {
+        return false;
+    }
+    true
 }
 
-/// Fix common OCR confusions on Shopee-style ids (trailing O/o → 0 when rest is digit-heavy).
+/// Fix common OCR confusions on Shopee-style ids.
 pub fn normalize_order_id(raw: &str, kind: OrderIdKind) -> String {
     let mut s = raw.trim().to_string();
     if kind == OrderIdKind::Alphanumeric {
-        // Uppercase letters; keep digits
+        // DB stores uppercase; OCR often mixes case.
         s = s
             .chars()
             .map(|c| {
@@ -293,7 +347,7 @@ pub fn normalize_order_id(raw: &str, kind: OrderIdKind) -> String {
                 }
             })
             .collect();
-        // Trailing O that is likely zero (e.g. …HRGCO → …HRGC0)
+        // Trailing O → 0 (e.g. …HRGCO → …HRGC0). Real trailing O is extremely rare in DB.
         if s.ends_with('O') {
             let head = &s[..s.len() - 1];
             if head.chars().filter(|c| c.is_ascii_digit()).count() >= 6 {
@@ -309,6 +363,17 @@ pub fn normalize_order_id(raw: &str, kind: OrderIdKind) -> String {
 pub fn extract_order_id_from_image(path: &Path) -> Result<Option<OrderIdHit>> {
     let lines = ocr_image_lines(path)?;
     Ok(extract_order_ids(&lines).into_iter().next())
+}
+
+/// OCR image bytes + all order-id candidates (best first).
+pub fn extract_order_ids_from_bytes(bytes: &[u8]) -> Result<Vec<OrderIdHit>> {
+    let lines = ocr_image_bytes(bytes)?;
+    Ok(extract_order_ids(&lines))
+}
+
+/// OCR image bytes + best order id (if any).
+pub fn extract_order_id_from_bytes(bytes: &[u8]) -> Result<Option<OrderIdHit>> {
+    Ok(extract_order_ids_from_bytes(bytes)?.into_iter().next())
 }
 
 #[cfg(test)]
@@ -355,5 +420,36 @@ mod tests {
         let lines = vec!["260715PS7HRGCO".into(), "No. Pesanan".into()];
         let hits = extract_order_ids(&lines);
         assert_eq!(hits[0].id, "260715PS7HRGC0");
+    }
+
+    #[test]
+    fn accepts_letter_light_shopee_from_db() {
+        // Real row: only one letter in the tail — old rule (letters>=3) rejected these.
+        let lines = vec!["250911833646S0".into(), "No. Pesanan".into()];
+        let hits = extract_order_ids(&lines);
+        assert_eq!(hits[0].id, "250911833646S0");
+        assert_eq!(hits[0].kind, OrderIdKind::Alphanumeric);
+    }
+
+    #[test]
+    fn accepts_tiktok_18_digit() {
+        let lines = vec!["585115262532748712".into(), "Nomor pesanan".into()];
+        let hits = extract_order_ids(&lines);
+        assert_eq!(hits[0].id, "585115262532748712");
+        assert_eq!(hits[0].kind, OrderIdKind::NumericLong);
+    }
+
+    #[test]
+    fn rejects_bigseller_package_no() {
+        let lines = vec!["BS2798049528".into(), "No. Pesanan".into()];
+        let hits = extract_order_ids(&lines);
+        assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn accepts_rare_shopee_19() {
+        let lines = vec!["260305AASCRSCB374UU".into()];
+        let hits = extract_order_ids(&lines);
+        assert_eq!(hits[0].id, "260305AASCRSCB374UU");
     }
 }

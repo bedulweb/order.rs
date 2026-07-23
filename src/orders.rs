@@ -82,6 +82,8 @@ pub struct OrderListQuery {
     pub history_order: bool,
     /// When true with empty status, broader listing (use carefully).
     pub all_order: bool,
+    /// Marketplace order no / package search (BigSeller `searchType: orderNo`).
+    pub search_content: Option<String>,
 }
 
 impl Default for OrderListQuery {
@@ -94,6 +96,7 @@ impl Default for OrderListQuery {
             pack_state: Some("0".into()),
             history_order: false,
             all_order: false,
+            search_content: None,
         }
     }
 }
@@ -120,12 +123,34 @@ impl OrderListQuery {
             pack_state: None,
             history_order: true,
             all_order: false,
+            search_content: None,
+        }
+    }
+
+    /// Search one marketplace order number (active + recent tabs).
+    ///
+    /// Live BigSeller returns hits with `allOrder=true` and `historyOrder=false`.
+    /// Historical archive search often returns empty for in-flight shipped orders.
+    pub fn search_order_no(order_no: impl Into<String>) -> Self {
+        Self {
+            status: String::new(),
+            page_no: 1,
+            page_size: 20,
+            order_by: "orderCreateTime".into(),
+            pack_state: None,
+            history_order: false,
+            all_order: true,
+            search_content: Some(order_no.into()),
         }
     }
 
     pub fn to_json(&self) -> Value {
         // Shape aligned with live UI capture (docs/pageList-request-template.json).
         let pack_state = match &self.pack_state {
+            Some(s) => json!(s),
+            None => Value::Null,
+        };
+        let search_content = match &self.search_content {
             Some(s) => json!(s),
             None => Value::Null,
         };
@@ -136,7 +161,7 @@ impl OrderListQuery {
             "orderBy": self.order_by,
             "inquireType": 2,
             "searchType": "orderNo",
-            "searchContent": null,
+            "searchContent": search_content,
             "platform": null,
             "shopId": null,
             "warehouseId": null,

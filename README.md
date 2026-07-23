@@ -72,8 +72,13 @@ psql "$DATABASE_URL" -f docs/sql/001_init.sql
 psql "$DATABASE_URL" -f docs/sql/002_helpers.sql
 psql "$DATABASE_URL" -f docs/sql/003_outbox_and_indexes.sql
 psql "$DATABASE_URL" -f docs/sql/004_account_code.sql
+psql "$DATABASE_URL" -f docs/sql/005_batches.sql
 
 cargo build --release
+
+# Ops web UI (optional local)
+cd web && npm ci && npm run build
+# deploy dist to /var/www/orders-ui (see deploy/nginx-rs.obayito.com.conf)
 ```
 
 ## Usage
@@ -104,8 +109,8 @@ cargo build --release
 
 ## HTTP API (summary)
 
-Base (local): `http://127.0.0.1:8080` (`API_BIND`).  
-Public (nginx): `https://rs.obayito.com` — see [`deploy/`](deploy/) (`setup-rs.obayito.com.sh`).  
+Base (local): `http://127.0.0.1:8080` (`API_BIND`).
+Public (nginx): `https://rs.obayito.com` — see [`deploy/`](deploy/) (`setup-rs.obayito.com.sh`).
 Auth: `Authorization: Bearer <API_TOKEN>` or `X-Api-Key: <API_TOKEN>`.
 
 | Method | Path | Description |
@@ -113,17 +118,49 @@ Auth: `Authorization: Bearer <API_TOKEN>` or `X-Api-Key: <API_TOKEN>`.
 | GET | `/health` | Liveness + DB ping |
 | GET | `/v1/sync/status` | Recent sync runs, order count |
 | GET | `/v1/orders/by-platform-id/{id}` | Lookup by marketplace order id |
+| **POST** | **`/v1/app/lookup/text`** | App: nomor pesanan (JSON) |
+| **POST** | **`/v1/app/lookup/photo`** | App: upload screenshot → OCR → lookup |
 | GET | `/v1/orders/events` | Outbox cursor (`?since=&limit=`) |
 | GET | `/v1/reports/in-cancel/daily` | Daily cancel + print summary |
+| GET | `/v1/batches/backlog` | Ops: eligible pick backlog + urgent flags |
+| POST | `/v1/batches` | Ops: `{ "session": "morning"\|"afternoon"\|"urgent" }` → batch + PDF |
+| GET | `/v1/batches?date=YYYY-MM-DD` | Ops: list batches for a WIB day |
+| GET | `/v1/batches/{id}` | Ops: batch detail + members |
+| GET | `/v1/batches/{id}/pdf` | Ops: `application/pdf` reprint |
 
-Full contract: [docs/public-api.md](docs/public-api.md).
+Auth: `Authorization: Bearer <API_TOKEN>` or `X-Api-Key: <API_TOKEN>`.
 
-Example:
+Public site: SPA on `/` (ops UI), API on `/v1/*` and `/health` — see [`deploy/nginx-rs.obayito.com.conf`](deploy/nginx-rs.obayito.com.conf).
 
-```http
-GET /v1/orders/by-platform-id/2607206K6S67BG?account=default
-Authorization: Bearer <API_TOKEN>
+### App lookup (text)
+
+```bash
+curl -sS -X POST https://rs.obayito.com/v1/app/lookup/text \
+  -H "Authorization: Bearer $API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"platformOrderId":"260715PS7HRGC0"}'
 ```
+
+### App lookup (photo)
+
+```bash
+curl -sS -X POST https://rs.obayito.com/v1/app/lookup/photo \
+  -H "Authorization: Bearer $API_TOKEN" \
+  -F "image=@/path/to/screenshot.jpeg"
+```
+
+**Found** (`found: true`): `order` includes `items` (what they bought), amounts, platform, state.
+**Not found** (`found: false`, HTTP 200):
+
+```json
+{
+  "ok": true,
+  "found": false,
+  "message": "Maaf nomor pesanan tidak ditemukan harap periksa kembali."
+}
+```
+
+Show `message` as-is in the app UI.
 
 ## Worker behaviour
 

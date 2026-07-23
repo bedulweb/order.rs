@@ -16,6 +16,39 @@ pub struct UpsertOutcome {
     pub previous_state: Option<String>,
 }
 
+fn is_cancel_state(state: &str) -> bool {
+    matches!(
+        state.to_ascii_lowercase().as_str(),
+        "canceled" | "cancelled"
+    )
+}
+
+/// True when Summary List was already printed for this order:
+/// ops `batch_orders` membership and/or BigSeller collect/pick print marks.
+pub async fn order_summary_was_printed(pool: &PgPool, order_id: i64) -> Result<bool> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            COALESCE(o.print_collect_mark, 0)::int AS print_collect_mark,
+            COALESCE(o.print_pick_list_mark, 0)::int AS print_pick_list_mark,
+            EXISTS(
+                SELECT 1 FROM batch_orders bo WHERE bo.order_id = o.id
+            ) AS in_batch
+        FROM orders o
+        WHERE o.id = $1
+        "#,
+    )
+    .bind(order_id)
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| Error::Other(format!("order {order_id} not found")))?;
+
+    let collect: i32 = row.get("print_collect_mark");
+    let pick: i32 = row.get("print_pick_list_mark");
+    let in_batch: bool = row.get("in_batch");
+    Ok(in_batch || collect != 0 || pick != 0)
+}
+
 pub async fn upsert_order(
     pool: &PgPool,
     m: &MappedOrder,
@@ -44,8 +77,30 @@ pub async fn upsert_order(
     .execute(&mut *tx)
     .await?;
 
+    // Canonical row key for app lookup is platform_order_id. BigSeller may reuse the same
+    // (shop_id, platform_order_id) with a different internal id across list buckets /
+    // multi-package — unique index orders_shop_platform_order_uid would fail on plain
+    // ON CONFLICT (id). Prefer the existing id when the marketplace key already exists.
+    let existing_by_key = sqlx::query(
+        r#"
+        SELECT id, state FROM orders
+        WHERE shop_id = $1 AND platform_order_id = $2
+        LIMIT 1
+        "#,
+    )
+    .bind(m.shop.id)
+    .bind(&m.platform_order_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    let order_id = if let Some(ref row) = existing_by_key {
+        row.get::<i64, _>("id")
+    } else {
+        m.id
+    };
+
     let prev = sqlx::query(r#"SELECT state FROM orders WHERE id = $1"#)
-        .bind(m.id)
+        .bind(order_id)
         .fetch_optional(&mut *tx)
         .await?;
 
@@ -142,7 +197,7 @@ pub async fn upsert_order(
             updated_at = now()
         "#,
     )
-    .bind(m.id)
+    .bind(order_id)
     .bind(account_id)
     .bind(m.shop.id)
     .bind(&m.platform)
@@ -201,16 +256,68 @@ pub async fn upsert_order(
                 VALUES ($1, $2, $3, 'sync')
                 "#,
             )
-            .bind(m.id)
+            .bind(order_id)
             .bind(from)
             .bind(&m.state)
             .execute(&mut *tx)
             .await?;
         }
+
+        // Cancel WA notify only when Summary List was already printed
+        // (ops batch membership and/or BigSeller collect print mark).
+        if is_cancel_state(&m.state) && !previous_state.as_deref().is_some_and(is_cancel_state) {
+            let in_batch: bool = sqlx::query_scalar(
+                r#"
+                SELECT EXISTS(
+                    SELECT 1 FROM batch_orders
+                    WHERE order_id = $1
+                )
+                "#,
+            )
+            .bind(order_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            let collect_printed =
+                m.print_collect_mark.unwrap_or(0) != 0 || m.print_pick_list_mark.unwrap_or(0) != 0;
+            if in_batch || collect_printed {
+                let cancel_payload = json!({
+                    "orderId": order_id,
+                    "platformOrderId": m.platform_order_id,
+                    "platform": m.platform,
+                    "shopId": m.shop.id,
+                    "shopName": m.shop.name,
+                    "state": m.state,
+                    "previousState": previous_state,
+                    "printCollectMark": m.print_collect_mark,
+                    "printPickListMark": m.print_pick_list_mark,
+                    "summaryPrinted": true,
+                    "inBatch": in_batch,
+                    "buyerShippingCarrier": m.buyer_shipping_carrier,
+                    "shipmentProvider": m.shipment_provider,
+                    "shippingCarrierName": m.shipping_carrier_name,
+                });
+                sqlx::query(
+                    r#"
+                    INSERT INTO notification_outbox (event_type, order_id, platform_order_id, payload, status, account_id)
+                    VALUES ('order.canceled', $1, $2, $3, 'pending', $4)
+                    "#,
+                )
+                .bind(order_id)
+                .bind(&m.platform_order_id)
+                .bind(&cancel_payload)
+                .bind(account_id)
+                .execute(&mut *tx)
+                .await?;
+                debug!(
+                    order_id,
+                    in_batch, collect_printed, "enqueued order.canceled"
+                );
+            }
+        }
     }
 
     sqlx::query(r#"DELETE FROM order_items WHERE order_id = $1"#)
-        .bind(m.id)
+        .bind(order_id)
         .execute(&mut *tx)
         .await?;
 
@@ -253,7 +360,7 @@ pub async fn upsert_order(
             "#,
         )
         .bind(it.id)
-        .bind(m.id)
+        .bind(order_id)
         .bind(it.line_no)
         .bind(&it.sku)
         .bind(&it.variant_attr)
@@ -276,7 +383,7 @@ pub async fn upsert_order(
 
     if is_new {
         let notify_payload = json!({
-            "orderId": m.id,
+            "orderId": order_id,
             "platformOrderId": m.platform_order_id,
             "platform": m.platform,
             "shopId": m.shop.id,
@@ -286,6 +393,9 @@ pub async fn upsert_order(
             "state": m.state,
             "buyerUsername": m.buyer_username,
             "itemTotalNum": m.item_total_num,
+            "buyerShippingCarrier": m.buyer_shipping_carrier,
+            "shipmentProvider": m.shipment_provider,
+            "shippingCarrierName": m.shipping_carrier_name,
         });
         sqlx::query(
             r#"
@@ -293,19 +403,19 @@ pub async fn upsert_order(
             VALUES ('order.created', $1, $2, $3, 'pending', $4)
             "#,
         )
-        .bind(m.id)
+        .bind(order_id)
         .bind(&m.platform_order_id)
         .bind(&notify_payload)
         .bind(account_id)
         .execute(&mut *tx)
         .await?;
-        debug!(order_id = m.id, "enqueued order.created");
+        debug!(order_id, "enqueued order.created");
     }
 
     tx.commit().await?;
 
     Ok(UpsertOutcome {
-        order_id: m.id,
+        order_id,
         is_new,
         state_changed,
         previous_state,
@@ -491,7 +601,20 @@ async fn load_items(pool: &PgPool, order_id: i64) -> Result<Vec<OrderItemDto>> {
         r#"
         SELECT id, sku, variant_attr, item_name, quantity,
                amount::text AS amount, unit_price::text AS unit_price,
-               image_url, platform_item_id
+               COALESCE(
+                   NULLIF(image_url, ''),
+                   NULLIF(payload->>'image', ''),
+                   NULLIF(payload->>'imgUrl', ''),
+                   NULLIF(payload->>'imageUrl', '')
+               ) AS image_url,
+               platform_item_id,
+               COALESCE(
+                   NULLIF(item_name, ''),
+                   NULLIF(payload->>'itemName', ''),
+                   NULLIF(payload->>'productName', ''),
+                   NULLIF(payload->>'title', ''),
+                   sku
+               ) AS display_name
         FROM order_items
         WHERE order_id = $1
         ORDER BY line_no ASC
@@ -507,7 +630,7 @@ async fn load_items(pool: &PgPool, order_id: i64) -> Result<Vec<OrderItemDto>> {
             id: row.get("id"),
             sku: row.get("sku"),
             variant_attr: row.get("variant_attr"),
-            item_name: row.get("item_name"),
+            item_name: row.get("display_name"),
             quantity: row.get("quantity"),
             amount: opt_numeric(&row, "amount"),
             unit_price: opt_numeric(&row, "unit_price"),

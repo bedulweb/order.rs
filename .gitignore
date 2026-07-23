@@ -2,6 +2,10 @@
 /target/
 **/*.rs.bk
 
+# Frontend
+web/node_modules/
+web/dist/
+
 # Secrets and local env (never commit)
 .env
 .env.*
@@ -27,6 +31,13 @@ models/*.onnx
 .playwright/
 *.log
 /tmp/
+
+# Local/generated reports and source data dumps
+*.pdf
+*.xlsx
+/logs/*
+!/logs/logos-logistics/
+!/logs/logos-logistics/**
 
 # OS / editor
 .DS_Store

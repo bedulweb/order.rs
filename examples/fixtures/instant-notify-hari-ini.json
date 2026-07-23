@@ -1,0 +1,27 @@
+[
+  {
+    "carrier": "SPX Instant",
+    "isUrgent": true,
+    "items": [
+      {
+        "imageUrl": "https://cf.shopee.co.id/file/id-11134207-822wi-mothc761xvr69e_tn",
+        "name": "Obayito Singlet",
+        "quantity": 2,
+        "sku": "OB-0136-LB",
+        "variantAttr": "LB"
+      },
+      {
+        "imageUrl": "https://cf.shopee.co.id/file/id-11134207-822wh-mothc7669ssv1c_tn",
+        "name": "Obayito Singlet",
+        "quantity": 1,
+        "sku": "OB-0136-3",
+        "variantAttr": "3"
+      }
+    ],
+    "orderId": 14479354211,
+    "orderedAtWib": "2026-07-21 20:47:04 WIB",
+    "platform": "shopee",
+    "platformOrderId": "26072195X9S7EJ",
+    "state": "new"
+  }
+]

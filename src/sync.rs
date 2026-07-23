@@ -57,6 +57,149 @@ impl Default for SyncBucketOpts {
     }
 }
 
+/// Fetch one marketplace order number from BigSeller and upsert into Postgres.
+///
+/// Tries historical all-order search first, then a few common status buckets.
+pub async fn sync_one_order_no(
+    pool: &PgPool,
+    api: &OrdersApi,
+    order_no: &str,
+    ctx: &SyncContext,
+) -> Result<SyncStats> {
+    let kind = match &ctx.account_code {
+        Some(c) => format!("orders_search:{c}"),
+        None => "orders_search".into(),
+    };
+    let run_id = begin_sync_run(pool, &kind, ctx.account_id).await?;
+    let mut upserted = 0i32;
+    let mut created = 0i32;
+    let mut state_changed = 0i32;
+    let mut pages = 0i32;
+
+    let result = async {
+        // Prefer the live search shape that BigSeller actually returns for shipped/active
+        // orders. Only fall back to historical buckets if the first hit is empty.
+        let mut queries = vec![OrderListQuery::search_order_no(order_no)];
+        for status in ["shipped", "completed", "processing", "new", "canceled"] {
+            let mut q = OrderListQuery::active(status);
+            q.search_content = Some(order_no.to_string());
+            q.page_size = 20;
+            q.pack_state = None;
+            q.all_order = true;
+            queries.push(q);
+            let mut qh = OrderListQuery::historical(status);
+            qh.search_content = Some(order_no.to_string());
+            qh.page_size = 20;
+            queries.push(qh);
+        }
+
+        let mut seen_bs_ids = std::collections::HashSet::new();
+        for (i, q) in queries.into_iter().enumerate() {
+            if i > 0 {
+                // BigSeller rate-limits multi-search bursts.
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            }
+            pages += 1;
+            let page = match api.page_list(&q).await {
+                Ok(p) => p,
+                Err(e) => {
+                    let msg = e.to_string();
+                    if msg.contains("frequent") || msg.contains("try again") || msg.contains("2001")
+                    {
+                        warn!(%msg, "pageList search retry after backoff");
+                        tokio::time::sleep(std::time::Duration::from_secs(12)).await;
+                        api.page_list(&q).await?
+                    } else {
+                        return Err(e);
+                    }
+                }
+            };
+            if page.rows.is_empty() {
+                continue;
+            }
+            for row in &page.rows {
+                let Some(mapped) = map_order_row(row) else {
+                    warn!("skip unmappable order row");
+                    continue;
+                };
+                if !mapped.platform_order_id.eq_ignore_ascii_case(order_no)
+                    && !mapped
+                        .platform_order_id
+                        .to_ascii_uppercase()
+                        .contains(&order_no.to_ascii_uppercase())
+                {
+                    // Keep non-exact hits only when search returned a single row.
+                    if page.rows.len() > 1 {
+                        continue;
+                    }
+                }
+                if !seen_bs_ids.insert(mapped.id) {
+                    continue;
+                }
+                let outcome: UpsertOutcome = upsert_order(pool, &mapped, ctx.account_id).await?;
+                upserted += 1;
+                if outcome.is_new {
+                    created += 1;
+                }
+                if outcome.state_changed {
+                    state_changed += 1;
+                }
+                info!(
+                    order_no = %mapped.platform_order_id,
+                    bs_id = mapped.id,
+                    state = %mapped.state,
+                    "synced order by search"
+                );
+            }
+            if upserted > 0 {
+                break;
+            }
+        }
+
+        Ok::<_, Error>(SyncStats {
+            kind: kind.clone(),
+            pages,
+            upserted,
+            created,
+            state_changed,
+        })
+    }
+    .await;
+
+    match result {
+        Ok(stats) => {
+            finish_sync_run(
+                pool,
+                run_id,
+                "ok",
+                stats.pages,
+                stats.upserted,
+                None,
+                json!({
+                    "orderNo": order_no,
+                    "created": stats.created,
+                    "stateChanged": stats.state_changed,
+                }),
+            )
+            .await?;
+            Ok(stats)
+        }
+        Err(e) => {
+            let _ = finish_sync_run(
+                pool,
+                run_id,
+                "error",
+                pages,
+                upserted,
+                Some(&e.to_string()),
+                json!({ "orderNo": order_no }),
+            )
+            .await;
+            Err(e)
+        }
+    }
+}
+
 /// Sync one status bucket (all pages).
 pub async fn sync_status_bucket(
     pool: &PgPool,
@@ -338,6 +481,7 @@ pub struct WorkerConfig {
     pub cancel_minute_local: u32,
     pub wa_webhook_url: Option<String>,
     pub wa_webhook_token: Option<String>,
+    pub wazapin: Option<crate::wazapin::WazapinConfig>,
     /// Auto re-login when BS returns auth-expired.
     pub auto_relogin: bool,
 }
@@ -350,6 +494,7 @@ impl Default for WorkerConfig {
             cancel_minute_local: 0,
             wa_webhook_url: None,
             wa_webhook_token: None,
+            wazapin: None,
             auto_relogin: true,
         }
     }
@@ -568,13 +713,55 @@ async fn drain_outbox(pool: &PgPool, cfg: &WorkerConfig) -> Result<()> {
         return Ok(());
     }
 
-    let Some(url) = cfg.wa_webhook_url.as_deref() else {
-        return Ok(());
+    let wazapin = match cfg.wazapin.as_ref() {
+        Some(w) if w.enabled_any() => match crate::wazapin::WazapinClient::new(w.clone()) {
+            Ok(c) => Some(c),
+            Err(e) => {
+                warn!(error = %e, "wazapin client init failed");
+                None
+            }
+        },
+        _ => None,
     };
 
-    let client = reqwest::Client::new();
+    let webhook_url = cfg.wa_webhook_url.as_deref();
+    if wazapin.is_none() && webhook_url.is_none() {
+        // Nothing to deliver — leave pending so enabling env later still drains.
+        return Ok(());
+    }
+
+    let http = reqwest::Client::new();
     for ev in events {
-        let mut req = client.post(url).json(&json!({
+        // 1) Instant → Wazapin group (image card)
+        if let Some(ref wz) = wazapin {
+            match crate::notify::try_handle_outbox_wazapin(pool, wz, &ev).await {
+                Ok(true) => {
+                    mark_outbox_sent(pool, ev.id).await?;
+                    continue;
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    warn!(
+                        outbox_id = ev.id,
+                        error = %e,
+                        "wazapin instant notify failed"
+                    );
+                    mark_outbox_failed(pool, ev.id, &e.to_string()).await?;
+                    continue;
+                }
+            }
+        }
+
+        // 2) Optional generic webhook for non-instant (or all if no wazapin)
+        let Some(url) = webhook_url else {
+            // Non-instant with only wazapin configured: mark sent so outbox doesn't pile up.
+            if wazapin.is_some() {
+                mark_outbox_sent(pool, ev.id).await?;
+            }
+            continue;
+        };
+
+        let mut req = http.post(url).json(&json!({
             "id": ev.id,
             "eventType": ev.event_type,
             "orderId": ev.order_id,

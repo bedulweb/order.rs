@@ -1,12 +1,13 @@
-//! CLI: login | list | counts | sync | worker | serve | doctor | ocr | extract-order-id | status
+//! CLI: login | list | counts | sync | worker | serve | doctor | ocr | extract-order-id | status | rekap-harian
 
 use anyhow::Context;
+use chrono::NaiveDate;
 use clap::{Parser, Subcommand};
 use orders::{
     accounts,
     api::{self, ApiState},
-    db, login, screen_ocr, sync, CaptchaOcr, Config, OrderListQuery, OrderSummary, OrdersApi,
-    SessionData,
+    catalog, daily_infographic, daily_report, db, login, screen_ocr, sync, CaptchaOcr, Config,
+    OrderListQuery, OrderSummary, OrdersApi, SessionData,
 };
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -56,6 +57,9 @@ enum Command {
         /// `history` = full historical backfill (completed/shipped/canceled/…).
         #[arg(long, default_value = "new")]
         status: String,
+        /// Pull a single marketplace order number (search + upsert).
+        #[arg(long)]
+        order_no: Option<String>,
     },
 
     /// Long-running: poll new + evening cancel + outbox + auto re-login
@@ -86,6 +90,54 @@ enum Command {
 
     /// Show session file status
     Status,
+
+    /// Import product catalog (ART + HPP) from normalized marketplace xlsx
+    CatalogImport {
+        /// Path to xlsx (default: MARKETPLACE_PRICE_2026_NORMALIZED.xlsx)
+        #[arg(long)]
+        path: Option<PathBuf>,
+        /// Print JSON counts
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Rekap harian order → PNG (SKU sama digabung). Opsional upload temp.sh.
+    RekapHarian {
+        /// Tanggal YYYY-MM-DD (default: hari ini, zona UTC+offset)
+        #[arg(long)]
+        date: Option<String>,
+        /// Offset jam dari UTC (Asia/Jakarta = 7)
+        #[arg(long, default_value_t = 7)]
+        tz_offset: i32,
+        /// Sertakan order canceled
+        #[arg(long)]
+        include_canceled: bool,
+        /// Path output PNG (default: logs/rekap-harian-YYYY-MM-DD.png)
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Juga simpan SVG mentah di samping PNG
+        #[arg(long)]
+        svg: bool,
+        /// Upload PNG ke temp.sh dan cetak URL
+        #[arg(long)]
+        upload: bool,
+        /// Cetak ringkasan JSON ke stdout (tanpa PNG base64)
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Rekap sore hari ini → PNG infographic. Opsional kirim Wazapin.
+    RekapSore {
+        /// Path output PNG (default: logs/rekap-sore-YYYY-MM-DD.png)
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Cetak model JSON ke stdout
+        #[arg(long)]
+        json: bool,
+        /// Kirim PNG ke group Wazapin setelah generate
+        #[arg(long)]
+        send: bool,
+    },
 }
 
 #[tokio::main]
@@ -203,7 +255,7 @@ async fn main() -> anyhow::Result<()> {
             }
         }
 
-        Command::Sync { status } => {
+        Command::Sync { status, order_no } => {
             let db_url = cfg.require_database_url()?;
             let pool = db::connect(db_url).await?;
             db::ping(&pool).await?;
@@ -216,6 +268,15 @@ async fn main() -> anyhow::Result<()> {
 
             let session = SessionData::load(&cfg.session_path)?;
             let api = OrdersApi::new(&cfg.base_url, &session)?;
+
+            if let Some(no) = order_no {
+                let s = sync::sync_one_order_no(&pool, &api, &no, &ctx).await?;
+                println!(
+                    "search {}: pages={} upserted={} created={} state_changed={}",
+                    no, s.pages, s.upserted, s.created, s.state_changed
+                );
+                return Ok(());
+            }
 
             match status.as_str() {
                 "all" => {
@@ -263,10 +324,8 @@ async fn main() -> anyhow::Result<()> {
                 }
                 other => {
                     // bare status name: use historical flags for archive tabs
-                    let historical = matches!(
-                        other,
-                        "completed" | "shipped" | "canceled" | "cancelled"
-                    );
+                    let historical =
+                        matches!(other, "completed" | "shipped" | "canceled" | "cancelled");
                     let s = sync::sync_status_bucket_with(
                         &pool,
                         &api,
@@ -298,15 +357,24 @@ async fn main() -> anyhow::Result<()> {
                 cancel_minute_local: cfg.cancel_minute_local,
                 wa_webhook_url: cfg.wa_webhook_url.clone(),
                 wa_webhook_token: cfg.wa_webhook_token.clone(),
+                wazapin: cfg.wazapin.clone(),
                 auto_relogin: cfg.auto_relogin,
             };
             println!(
-                "worker: new every {}s, cancel {:02}:{:02} local, auto_relogin={}, webhook={}",
+                "worker: new every {}s, cancel {:02}:{:02} local, auto_relogin={}, webhook={}, wazapin_instant={}, wazapin_cancel={}",
                 wcfg.new_interval_secs,
                 wcfg.cancel_hour_local,
                 wcfg.cancel_minute_local,
                 wcfg.auto_relogin,
-                wcfg.wa_webhook_url.is_some()
+                wcfg.wa_webhook_url.is_some(),
+                wcfg.wazapin
+                    .as_ref()
+                    .map(|w| w.enabled_for_instant())
+                    .unwrap_or(false),
+                wcfg.wazapin
+                    .as_ref()
+                    .map(|w| w.enabled_for_cancel())
+                    .unwrap_or(false)
             );
             sync::run_worker(pool, cfg, wcfg).await?;
         }
@@ -325,6 +393,7 @@ async fn main() -> anyhow::Result<()> {
             let state = ApiState {
                 pool,
                 api_token: cfg.api_token.clone(),
+                web_dist: cfg.web_dist.clone(),
             };
             api::serve(state, addr).await?;
         }
@@ -397,6 +466,143 @@ async fn main() -> anyhow::Result<()> {
                 std::process::exit(1);
             }
         },
+
+        Command::CatalogImport { path, json } => {
+            let db_url = cfg.require_database_url()?;
+            let pool = db::connect(db_url).await?;
+            db::ping(&pool).await?;
+            let path = path.unwrap_or_else(|| {
+                let cwd = PathBuf::from(catalog::DEFAULT_WORKBOOK);
+                if cwd.is_file() {
+                    cwd
+                } else {
+                    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(catalog::DEFAULT_WORKBOOK)
+                }
+            });
+            let result = catalog::import_from_path(&pool, &path)
+                .await
+                .with_context(|| format!("import {}", path.display()))?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                println!(
+                    "catalog import {}: inserted={} updated={} skipped={} totalRows={}",
+                    path.display(),
+                    result.inserted,
+                    result.updated,
+                    result.skipped,
+                    result.total_rows
+                );
+            }
+        }
+
+        Command::RekapHarian {
+            date,
+            tz_offset,
+            include_canceled,
+            out,
+            svg,
+            upload,
+            json,
+        } => {
+            let db_url = cfg.require_database_url()?;
+            let pool = db::connect(db_url).await?;
+            db::ping(&pool).await?;
+
+            let day = if let Some(s) = date {
+                NaiveDate::parse_from_str(&s, "%Y-%m-%d")
+                    .with_context(|| format!("parse date {s} (want YYYY-MM-DD)"))?
+            } else {
+                // "today" in the requested offset (not server Local alone).
+                let now_utc = chrono::Utc::now();
+                (now_utc + chrono::Duration::hours(tz_offset as i64)).date_naive()
+            };
+
+            let rekap =
+                daily_report::load_daily_rekap(&pool, day, tz_offset, include_canceled).await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&rekap)?);
+            } else {
+                println!(
+                    "rekap {} · orders={} qty={} sku_lines={} gmv={}",
+                    rekap.date,
+                    rekap.order_count,
+                    rekap.item_qty,
+                    rekap.sku_lines,
+                    rekap.gmv.as_deref().unwrap_or("-")
+                );
+            }
+
+            let svg_str = daily_report::rekap_to_svg(&rekap);
+            let png = daily_report::svg_to_png(&svg_str)?;
+            let out_path = out.unwrap_or_else(|| daily_report::default_png_path(day));
+            daily_report::write_png(&out_path, &png)?;
+            println!("png: {} ({} bytes)", out_path.display(), png.len());
+
+            if svg {
+                let svg_path = out_path.with_extension("svg");
+                std::fs::write(&svg_path, svg_str.as_bytes())?;
+                println!("svg: {}", svg_path.display());
+            }
+
+            if upload {
+                let name = out_path
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("rekap-harian.png");
+                let url = daily_report::upload_temp_sh(&png, name).await?;
+                println!("temp.sh: {url}");
+            }
+        }
+
+        Command::RekapSore { out, json, send } => {
+            let db_url = cfg.require_database_url()?;
+            let pool = db::connect(db_url).await?;
+            db::ping(&pool).await?;
+
+            let report = daily_infographic::load_daily_infographic(&pool, None, None).await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!(
+                    "rekap-sore {} · orders={} qty={} gmv={} cancel={}",
+                    report.date,
+                    report.current.order_count,
+                    report.current.qty,
+                    report.current.gmv,
+                    report.current.cancel_n
+                );
+            }
+
+            let png = daily_infographic::render_png(&report)?;
+            let out_path = out.unwrap_or_else(|| daily_infographic::default_png_path(report.date));
+            daily_report::write_png(&out_path, &png)?;
+            println!("png: {} ({} bytes)", out_path.display(), png.len());
+
+            if send {
+                let wz_cfg = cfg
+                    .wazapin
+                    .clone()
+                    .or_else(orders::wazapin::WazapinConfig::from_env)
+                    .ok_or_else(|| anyhow::anyhow!("WAZAPIN_API_KEY / CHANNEL / GROUP not set"))?;
+                let client = orders::wazapin::WazapinClient::new(wz_cfg)?;
+                let caption = format!(
+                    "Rekap hari ini {}\nOmset {} · Order {} · Qty {} · Cancel {}",
+                    report.date.format("%d/%m/%Y"),
+                    report.current.gmv.round() as i64,
+                    report.current.order_count,
+                    report.current.qty,
+                    report.current.cancel_n
+                );
+                let filename = out_path
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("rekap-sore.png");
+                println!("sending …");
+                let r = client.send_png_bytes(&png, filename, &caption).await?;
+                println!("ok msg_id={}", r.id);
+            }
+        }
     }
 
     Ok(())

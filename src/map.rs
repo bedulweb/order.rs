@@ -179,13 +179,22 @@ fn map_item(it: &Value, line_no: i32) -> Option<MappedItem> {
         line_no,
         sku: as_string(it.get("varSku")).or_else(|| as_string(it.get("sku"))),
         variant_attr: as_string(it.get("varAttr")),
-        item_name: as_string(it.get("itemName")).or_else(|| as_string(it.get("productName"))),
+        item_name: as_string(it.get("itemName"))
+            .or_else(|| as_string(it.get("productName")))
+            .or_else(|| as_string(it.get("title")))
+            .or_else(|| as_string(it.get("name"))),
         quantity: as_i64(it.get("quantity")).unwrap_or(1) as i32,
         amount: as_money(it.get("amount")),
-        unit_price: as_money(it.get("itemPrice")).or_else(|| as_money(it.get("price"))),
+        unit_price: as_money(it.get("itemPrice"))
+            .or_else(|| as_money(it.get("price")))
+            .or_else(|| as_money(it.get("varDiscountedPrice"))),
         original_price: as_money(it.get("originalPrice")),
-        image_url: as_string(it.get("imgUrl")).or_else(|| as_string(it.get("imageUrl"))),
-        product_url: as_string(it.get("productUrl")),
+        // BigSeller pageList often uses `image` (not imgUrl/imageUrl).
+        image_url: as_string(it.get("imgUrl"))
+            .or_else(|| as_string(it.get("imageUrl")))
+            .or_else(|| as_string(it.get("image")))
+            .or_else(|| as_string(it.get("inventorySkuImage"))),
+        product_url: as_string(it.get("productUrl")).or_else(|| as_string(it.get("link"))),
         platform_item_id: as_string(it.get("platformItemId")),
         platform_variation_id: as_string(it.get("platformVariationId")),
         inventory_sku: as_string(it.get("inventorySku")),

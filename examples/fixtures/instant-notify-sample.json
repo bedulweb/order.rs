@@ -1,0 +1,77 @@
+[
+  {
+    "carrier": "SPX Instant",
+    "isUrgent": true,
+    "items": [
+      {
+        "imageUrl": "https://cf.shopee.co.id/file/id-11134207-822wi-mothc761xvr69e_tn",
+        "name": "Obayito Singlet",
+        "quantity": 2,
+        "sku": "OB-0136-LB",
+        "variantAttr": "LB"
+      },
+      {
+        "imageUrl": "https://cf.shopee.co.id/file/id-11134207-822wh-mothc7669ssv1c_tn",
+        "name": "Obayito Singlet",
+        "quantity": 1,
+        "sku": "OB-0136-3",
+        "variantAttr": "3"
+      }
+    ],
+    "orderId": 14479354211,
+    "orderedAtWib": "2026-07-21 20:47:04 WIB",
+    "platform": "shopee",
+    "platformOrderId": "26072195X9S7EJ",
+    "state": "new"
+  },
+  {
+    "carrier": "SPX Instant Prioritas",
+    "isUrgent": true,
+    "items": [
+      {
+        "imageUrl": "https://cf.shopee.co.id/file/id-11134207-822wk-motgsqdku5mo5d_tn",
+        "name": "Obayito Singlet",
+        "quantity": 1,
+        "sku": "OB-0136-L",
+        "variantAttr": "L"
+      }
+    ],
+    "orderId": 14381637953,
+    "orderedAtWib": "2026-07-16 15:23:19 WIB",
+    "platform": "shopee",
+    "platformOrderId": "260716S4U4K0H3",
+    "state": "canceled"
+  },
+  {
+    "carrier": "SPX Instant Prioritas",
+    "isUrgent": true,
+    "items": [
+      {
+        "imageUrl": "https://cf.shopee.co.id/file/id-11134207-822wm-motgsqdkojcw37_tn",
+        "name": "Obayito Singlet",
+        "quantity": 1,
+        "sku": "OB-0136-NB",
+        "variantAttr": "NB"
+      },
+      {
+        "imageUrl": "https://cf.shopee.co.id/file/id-11134207-822wj-mnz6uzlejsas90_tn",
+        "name": "Obayito Tencel Piyama Panjang",
+        "quantity": 1,
+        "sku": "0B-0134-S-KMRI",
+        "variantAttr": "Nemuri,S"
+      },
+      {
+        "imageUrl": "https://cf.shopee.co.id/file/id-11134207-822wl-mnz6uzle8jr818_tn",
+        "name": "Obayito Tencel Piyama Panjang",
+        "quantity": 1,
+        "sku": "0B-0133-S-KMRI",
+        "variantAttr": "Komori,S"
+      }
+    ],
+    "orderId": 14363732035,
+    "orderedAtWib": "2026-07-15 17:20:49 WIB",
+    "platform": "shopee",
+    "platformOrderId": "260715PTX8NGB0",
+    "state": "canceled"
+  }
+]

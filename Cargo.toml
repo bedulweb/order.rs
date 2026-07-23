@@ -11,7 +11,7 @@ rust-version = "1.75"
 [dependencies]
 aes = "0.8"
 anyhow = "1"
-axum = { version = "0.8", features = ["macros"] }
+axum = { version = "0.8", features = ["macros", "multipart"] }
 base64 = "0.22"
 cbc = { version = "0.1", features = ["alloc"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
@@ -22,7 +22,8 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg"]
 ocrs = "0.12"
 ort = "2.0.0-rc.12"
 rand = "0.8"
-reqwest = { version = "0.13", default-features = false, features = ["json", "cookies", "rustls", "blocking"] }
+resvg = "0.45"
+reqwest = { version = "0.13", default-features = false, features = ["json", "cookies", "rustls", "blocking", "multipart"] }
 reqwest_cookie_store = "0.10.0"
 rten = "0.24"
 rust_decimal = { version = "1.42.1", features = ["serde-with-str"] }
@@ -36,14 +37,17 @@ sqlx = { version = "0.8", default-features = false, features = [
     "chrono",
     "json",
     "macros",
+    "uuid",
 ] }
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "time", "signal"] }
-tower-http = { version = "0.6", features = ["cors", "trace"] }
+tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 url = "2.5.8"
 uuid = { version = "1", features = ["v4", "serde"] }
+printpdf = { version = "0.7", features = ["embedded_images"] }
+calamine = "0.26"
 
 [profile.release]
 lto = "thin"

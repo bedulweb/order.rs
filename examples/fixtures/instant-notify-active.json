@@ -1,0 +1,124 @@
+[
+  {
+    "carrier": "SPX Instant",
+    "isUrgent": true,
+    "items": [
+      {
+        "imageUrl": "https://cf.shopee.co.id/file/id-11134207-822wi-mothc761xvr69e_tn",
+        "name": "Obayito Singlet",
+        "quantity": 2,
+        "sku": "OB-0136-LB",
+        "variantAttr": "LB"
+      },
+      {
+        "imageUrl": "https://cf.shopee.co.id/file/id-11134207-822wh-mothc7669ssv1c_tn",
+        "name": "Obayito Singlet",
+        "quantity": 1,
+        "sku": "OB-0136-3",
+        "variantAttr": "3"
+      }
+    ],
+    "orderId": 14479354211,
+    "orderedAtWib": "2026-07-21 20:47:04 WIB",
+    "platform": "shopee",
+    "platformOrderId": "26072195X9S7EJ",
+    "state": "new"
+  },
+  {
+    "carrier": "SPX Sameday",
+    "isUrgent": true,
+    "items": [
+      {
+        "imageUrl": "https://cf.shopee.co.id/file/id-11134207-7rbkc-m95mkaugz9ct80_tn",
+        "name": "Obayito Guling Balita",
+        "quantity": 1,
+        "sku": "OB-025-BKLB",
+        "variantAttr": "Bear Koala - L Blue"
+      }
+    ],
+    "orderId": 8858944265,
+    "orderedAtWib": "2025-09-12 04:33:31 WIB",
+    "platform": "shopee",
+    "platformOrderId": "2509118QRXF25Y",
+    "state": "new"
+  },
+  {
+    "carrier": "SPX Sameday",
+    "isUrgent": true,
+    "items": [
+      {
+        "imageUrl": "https://cf.shopee.co.id/file/f65dd2ffa57add93720e74873161871b_tn",
+        "name": "Obayito Sarung Mimi Pillow",
+        "quantity": 1,
+        "sku": "OB-001-1M-MIPB",
+        "variantAttr": "Moosui - Polo Blue,Medium"
+      }
+    ],
+    "orderId": 8858400499,
+    "orderedAtWib": "2025-09-12 03:52:40 WIB",
+    "platform": "shopee",
+    "platformOrderId": "2509118NFW0EJQ",
+    "state": "new"
+  },
+  {
+    "carrier": "SPX Sameday",
+    "isUrgent": true,
+    "items": [
+      {
+        "imageUrl": "https://cf.shopee.co.id/file/2b983b09a83e8869d5f1713869f217fc_tn",
+        "name": "Obytobi Alas Car Seat Two Colour",
+        "quantity": 1,
+        "sku": "OB-039-B-BEBK",
+        "variantAttr": "Beage - Black"
+      },
+      {
+        "imageUrl": "https://cf.shopee.co.id/file/id-11134207-7rbk6-m90g5yhj6qdt48_tn",
+        "name": "Miabebo Alas Kereta Two Motive Bergesper",
+        "quantity": 1,
+        "sku": "MB-021-PBLP",
+        "variantAttr": "Panda Light Pink"
+      }
+    ],
+    "orderId": 8857938215,
+    "orderedAtWib": "2025-09-12 03:20:21 WIB",
+    "platform": "shopee",
+    "platformOrderId": "2509118KP3T9SH",
+    "state": "new"
+  },
+  {
+    "carrier": "SPX Sameday",
+    "isUrgent": true,
+    "items": [
+      {
+        "imageUrl": "https://cf.shopee.co.id/file/id-11134207-7ra0u-mcq4si5x8bxf42_tn",
+        "name": "Obytobi Alas Kereta Two Motives Bergesper",
+        "quantity": 1,
+        "sku": "OB-0112-B-DCCR",
+        "variantAttr": "DC-Cream"
+      }
+    ],
+    "orderId": 8853846544,
+    "orderedAtWib": "2025-09-11 21:51:20 WIB",
+    "platform": "shopee",
+    "platformOrderId": "250911819RCYXM",
+    "state": "new"
+  },
+  {
+    "carrier": "Gojek",
+    "isUrgent": true,
+    "items": [
+      {
+        "imageUrl": "https://p16-oec-va.ibyteimg.com/tos-maliva-i-o3syd03w52-us/83ae284da5834cbb81b08835c08769ba~tplv-o3syd03w52-origin-jpeg.jpeg?dr=15568&t=555f072d&ps=933b5bde&shp=54477afb&shcp=3c3d9ffb&idc=my&from=1413970683",
+        "name": "Obayito Bantal Ibu hamil Multifungsi (Banana)",
+        "quantity": 1,
+        "sku": "OB-067-3-BKLC",
+        "variantAttr": "Light Cream"
+      }
+    ],
+    "orderId": 8850390166,
+    "orderedAtWib": "2025-09-11 17:22:15 WIB",
+    "platform": "tiktok",
+    "platformOrderId": "580341708571183100",
+    "state": "new"
+  }
+]

@@ -1,0 +1,24 @@
+[Unit]
+Description=order.rs historical order backfill (BigSeller → Postgres)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ujang
+Group=ujang
+WorkingDirectory=/home/ujang/projects/apps/orders
+Environment=PATH=/home/ujang/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=-/home/ujang/projects/apps/orders/.env
+# Completed bucket alone can take hours
+TimeoutStartSec=infinity
+TimeoutStopSec=120
+ExecStart=/home/ujang/projects/apps/orders/target/release/orders sync --status history
+# Retry if process dies mid-run (network blip, OOM, etc.)
+Restart=on-failure
+RestartSec=60
+StandardOutput=append:/home/ujang/projects/apps/orders/logs/history-sync.log
+StandardError=append:/home/ujang/projects/apps/orders/logs/history-sync.log
+
+[Install]
+WantedBy=multi-user.target

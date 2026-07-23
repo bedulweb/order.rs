@@ -23,10 +23,14 @@ pub struct Config {
     pub cancel_minute_local: u32,
     pub wa_webhook_url: Option<String>,
     pub wa_webhook_token: Option<String>,
+    /// Wazapin group notify (instant orders). None if env incomplete.
+    pub wazapin: Option<crate::wazapin::WazapinConfig>,
     /// Tenant slug stored on bs_accounts.code (default: "default").
     pub account_code: Option<String>,
     /// Worker re-login on BS auth expiry (default true).
     pub auto_relogin: bool,
+    /// Directory of built ops SPA (`web/dist`). Empty/`off` disables static serve.
+    pub web_dist: Option<PathBuf>,
 }
 
 impl Config {
@@ -86,11 +90,26 @@ impl Config {
                 .min(59),
             wa_webhook_url: env::var("WA_WEBHOOK_URL").ok().filter(|s| !s.is_empty()),
             wa_webhook_token: env::var("WA_WEBHOOK_TOKEN").ok().filter(|s| !s.is_empty()),
+            wazapin: crate::wazapin::WazapinConfig::from_env(),
             account_code: env::var("BS_ACCOUNT_CODE").ok().filter(|s| !s.is_empty()),
             auto_relogin: env::var("AUTO_RELOGIN")
                 .ok()
                 .map(|s| matches!(s.to_lowercase().as_str(), "1" | "true" | "yes" | "on"))
                 .unwrap_or(true),
+            web_dist: match env::var("WEB_DIST") {
+                Ok(s) if matches!(s.to_ascii_lowercase().as_str(), "" | "off" | "0" | "false") => {
+                    None
+                }
+                Ok(s) => Some(PathBuf::from(s)),
+                Err(_) => {
+                    let default = root.join("web/dist");
+                    if default.is_dir() {
+                        Some(default)
+                    } else {
+                        None
+                    }
+                }
+            },
         })
     }
 

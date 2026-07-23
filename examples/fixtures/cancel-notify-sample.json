@@ -1,0 +1,59 @@
+[
+  {
+    "cancelReason": "No longer needed",
+    "canceledAtWib": "2026-07-22 00:03:11 WIB",
+    "carrier": "J&T Express",
+    "items": [
+      {
+        "imageUrl": "https://p16-oec-sg.ibyteimg.com/tos-alisg-i-aphluv4xwc-sg/c883511af174467d9ffad29d55ff2fba~tplv-aphluv4xwc-origin-jpeg.jpeg?dr=15568&t=555f072d&ps=933b5bde&shp=54477afb&shcp=3c3d9ffb&idc=my2&from=1413970683",
+        "name": "Obayito Alas Kereta Two Motives Bergesper",
+        "quantity": 1,
+        "sku": "OB-0112-BKCR",
+        "variantAttr": "BK-Cream"
+      }
+    ],
+    "orderId": 12679130881,
+    "orderedAtWib": "2026-04-21 16:38:16 WIB",
+    "platform": "tiktok",
+    "platformOrderId": "583625736788674010",
+    "state": "canceled"
+  },
+  {
+    "cancelReason": "",
+    "canceledAtWib": "2026-07-22 00:03:11 WIB",
+    "carrier": "J&T Express",
+    "items": [
+      {
+        "imageUrl": "https://p16-oec-sg.ibyteimg.com/tos-alisg-i-aphluv4xwc-sg/7824cfa311664553a70a26db96b2c99b~tplv-aphluv4xwc-origin-jpeg.jpeg?dr=15568&t=555f072d&ps=933b5bde&shp=54477afb&shcp=3c3d9ffb&idc=my2&from=1413970683",
+        "name": "Obayito Bantal Mimi Pillow",
+        "quantity": 1,
+        "sku": "OB-021-1XL-MIPB",
+        "variantAttr": "Moosui - Polo Blue, Extra Large"
+      }
+    ],
+    "orderId": 12679415298,
+    "orderedAtWib": "2026-04-21 16:56:27 WIB",
+    "platform": "tiktok",
+    "platformOrderId": "583625987270018382",
+    "state": "canceled"
+  },
+  {
+    "cancelReason": "No longer needed",
+    "canceledAtWib": "2026-07-22 00:03:11 WIB",
+    "carrier": "J&T Express",
+    "items": [
+      {
+        "imageUrl": "https://p16-oec-sg.ibyteimg.com/tos-alisg-i-aphluv4xwc-sg/bd0beb70139049f0a232a9b03bb39398~tplv-aphluv4xwc-origin-jpeg.jpeg?dr=15568&t=555f072d&ps=933b5bde&shp=54477afb&shcp=3c3d9ffb&idc=my2&from=1413970683",
+        "name": "Miabebo Bantal Bayi",
+        "quantity": 1,
+        "sku": "MB-001-KOBL",
+        "variantAttr": "Koko & Olla | Blue"
+      }
+    ],
+    "orderId": 12686762035,
+    "orderedAtWib": "2026-04-21 23:36:34 WIB",
+    "platform": "tiktok",
+    "platformOrderId": "583631151826503332",
+    "state": "canceled"
+  }
+]

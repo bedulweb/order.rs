@@ -1,0 +1,144 @@
+{
+  "count": 23,
+  "failed": 0,
+  "items": [
+    {
+      "name": "DHL logo",
+      "file": "dhl.png",
+      "src": "https://zonalogo.com/assets/dhl-logo-png-svg.webp?w=1024&frame=trim",
+      "size": 52615
+    },
+    {
+      "name": "Paxel logo",
+      "file": "paxel.png",
+      "src": "https://zonalogo.com/assets/logo-paxel-png-svg.webp?w=1024&frame=trim",
+      "size": 156278
+    },
+    {
+      "name": "SAP Express logo",
+      "file": "sap-express.png",
+      "src": "https://zonalogo.com/assets/logo-sap-express-png-svg.webp?w=1024&frame=trim",
+      "size": 315603
+    },
+    {
+      "name": "Bulog logo",
+      "file": "bulog.png",
+      "src": "https://zonalogo.com/assets/logo-bulog.webp?w=1024&frame=trim",
+      "size": 189703
+    },
+    {
+      "name": "FedEx logo",
+      "file": "fedex.png",
+      "src": "https://zonalogo.com/assets/fedex-logo.webp?w=1024&frame=trim",
+      "size": 76467
+    },
+    {
+      "name": "Ninja Xpress logo",
+      "file": "ninja-xpress.png",
+      "src": "https://zonalogo.com/assets/logo-ninja-xpress.webp?w=1024&frame=trim",
+      "size": 143509
+    },
+    {
+      "name": "Ninja Van logo",
+      "file": "ninja-van.png",
+      "src": "https://zonalogo.com/assets/ninja-van-logo.webp?w=1024&frame=trim",
+      "size": 96118
+    },
+    {
+      "name": "Lalamove logo",
+      "file": "lalamove.png",
+      "src": "https://zonalogo.com/assets/lalamove-logo.webp?w=1024&frame=trim",
+      "size": 125161
+    },
+    {
+      "name": "Indah Cargo logo",
+      "file": "indah-cargo.png",
+      "src": "https://zonalogo.com/assets/logo-indah-cargo.webp?w=1024&frame=trim",
+      "size": 261893
+    },
+    {
+      "name": "Wahana Express logo",
+      "file": "wahana-express.png",
+      "src": "https://zonalogo.com/assets/logo-wahana-express.webp?w=1024&frame=trim",
+      "size": 127950
+    },
+    {
+      "name": "ID Express logo",
+      "file": "id-express.png",
+      "src": "https://zonalogo.com/assets/logo-id-express.webp?w=1024&frame=trim",
+      "size": 148714
+    },
+    {
+      "name": "Pos Indonesia logo",
+      "file": "pos-indonesia.png",
+      "src": "https://zonalogo.com/assets/logo-pos-indonesia.webp?w=1024&frame=trim",
+      "size": 158718
+    },
+    {
+      "name": "GoBox logo",
+      "file": "gobox.png",
+      "src": "https://zonalogo.com/assets/logo-gobox.webp?w=1024&frame=trim",
+      "size": 95384
+    },
+    {
+      "name": "TIKI logo",
+      "file": "tiki.png",
+      "src": "https://zonalogo.com/assets/logo-tiki.webp?w=1024&frame=trim",
+      "size": 115376
+    },
+    {
+      "name": "Lion Parcel logo",
+      "file": "lion-parcel.png",
+      "src": "https://zonalogo.com/assets/logo-lion-parcel.webp?w=1024&frame=trim",
+      "size": 83789
+    },
+    {
+      "name": "SPX Express logo",
+      "file": "spx-express.png",
+      "src": "https://zonalogo.com/assets/logo-spx-express.webp?w=1024&frame=trim",
+      "size": 188091
+    },
+    {
+      "name": "GrabExpress logo",
+      "file": "grabexpress.png",
+      "src": "https://zonalogo.com/assets/grabexpress-logo.webp?w=1024&frame=trim",
+      "size": 140803
+    },
+    {
+      "name": "J&T Cargo logo",
+      "file": "j-t-cargo.png",
+      "src": "https://zonalogo.com/assets/logo-jnt-cargo.webp?w=1024&frame=trim",
+      "size": 111821
+    },
+    {
+      "name": "Anteraja logo",
+      "file": "anteraja.png",
+      "src": "https://zonalogo.com/assets/logo-anteraja.webp?w=1024&frame=trim",
+      "size": 148180
+    },
+    {
+      "name": "SiCepat logo",
+      "file": "sicepat.png",
+      "src": "https://zonalogo.com/assets/logo-sicepat.webp?w=1024&frame=trim",
+      "size": 136777
+    },
+    {
+      "name": "J&T Express logo",
+      "file": "j-t-express.png",
+      "src": "https://zonalogo.com/assets/logo-jet-express.webp?w=1024&frame=trim",
+      "size": 79316
+    },
+    {
+      "name": "JNE logo",
+      "file": "jne.png",
+      "src": "https://zonalogo.com/assets/logo-jne.webp?w=1024&frame=trim",
+      "size": 131748
+    },
+    {
+      "name": "GoSend logo",
+      "file": "gosend.png",
+      "src": "https://zonalogo.com/assets/logo-gosend.webp?w=1024&frame=trim",
+      "size": 90260
+    }
+  ]
+}
