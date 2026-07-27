@@ -318,7 +318,9 @@ pub async fn list_backlog(
     })
 }
 
-async fn load_catalog_name_map(pool: &PgPool) -> Result<std::collections::HashMap<String, String>> {
+pub(crate) async fn load_catalog_name_map(
+    pool: &PgPool,
+) -> Result<std::collections::HashMap<String, String>> {
     // Best-effort: missing table → empty map (series/mimi still work).
     let rows = sqlx::query(r#"SELECT art, name FROM product_catalog"#)
         .fetch_all(pool)

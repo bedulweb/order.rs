@@ -640,6 +640,184 @@ async fn load_items(pool: &PgPool, order_id: i64) -> Result<Vec<OrderItemDto>> {
         .collect())
 }
 
+// ---------------------------------------------------------------------------
+// Ops feed: incoming (state=new) orders with line items
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NewOrderItemDto {
+    pub sku: Option<String>,
+    pub item_name: Option<String>,
+    pub variant_attr: Option<String>,
+    pub quantity: i32,
+    pub unit_price: Option<String>,
+    pub amount: Option<String>,
+    pub image_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NewOrderDto {
+    pub order_id: i64,
+    pub platform_order_id: String,
+    pub platform: String,
+    pub shop_name: Option<String>,
+    pub buyer_username: Option<String>,
+    pub contact_person: Option<String>,
+    pub carrier: Option<String>,
+    pub is_urgent: bool,
+    pub amount: Option<String>,
+    pub item_total_num: Option<i32>,
+    pub ordered_at: Option<DateTime<Utc>>,
+    pub items: Vec<NewOrderItemDto>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NewOrdersResponse {
+    pub total: i64,
+    pub orders: Vec<NewOrderDto>,
+}
+
+/// Incoming-orders feed for the ops table: `state = 'new'`, newest first,
+/// with line items (thumbnail, title, variant, price) loaded in one batch.
+pub async fn list_new_orders(
+    pool: &PgPool,
+    account_id: Option<i64>,
+    limit: i64,
+) -> Result<NewOrdersResponse> {
+    let limit = limit.clamp(1, 2000);
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            o.id, o.platform_order_id, o.platform, s.name AS shop_name,
+            o.buyer_username, o.contact_person,
+            o.buyer_shipping_carrier, o.shipment_provider, o.shipping_carrier_name,
+            o.amount::text AS amount, o.item_total_num, o.ordered_at
+        FROM orders o
+        LEFT JOIN shops s ON s.id = o.shop_id
+        WHERE o.state = 'new'
+          AND ($1::bigint IS NULL OR o.account_id = $1)
+        ORDER BY o.ordered_at DESC NULLS LAST, o.id DESC
+        LIMIT $2
+        "#,
+    )
+    .bind(account_id)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    let order_ids: Vec<i64> = rows.iter().map(|r| r.get("id")).collect();
+    let items_map = load_new_order_items(pool, &order_ids).await?;
+
+    let mut orders = Vec::with_capacity(rows.len());
+    for row in rows {
+        let id: i64 = row.get("id");
+        let buyer: Option<String> = row.get("buyer_shipping_carrier");
+        let ship: Option<String> = row.get("shipment_provider");
+        let carrier_name: Option<String> = row.get("shipping_carrier_name");
+        orders.push(NewOrderDto {
+            order_id: id,
+            platform_order_id: row.get("platform_order_id"),
+            platform: row.get("platform"),
+            shop_name: row.get("shop_name"),
+            buyer_username: row.get("buyer_username"),
+            contact_person: row.get("contact_person"),
+            carrier: crate::batch::carrier_display(
+                buyer.as_deref(),
+                ship.as_deref(),
+                carrier_name.as_deref(),
+            ),
+            is_urgent: crate::batch::is_urgent_carrier(
+                buyer.as_deref(),
+                ship.as_deref(),
+                carrier_name.as_deref(),
+            ),
+            amount: opt_numeric(&row, "amount"),
+            item_total_num: row.get("item_total_num"),
+            ordered_at: row.get("ordered_at"),
+            items: items_map.get(&id).cloned().unwrap_or_default(),
+        });
+    }
+
+    let total: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)::bigint
+        FROM orders
+        WHERE state = 'new'
+          AND ($1::bigint IS NULL OR account_id = $1)
+        "#,
+    )
+    .bind(account_id)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(NewOrdersResponse { total, orders })
+}
+
+async fn load_new_order_items(
+    pool: &PgPool,
+    order_ids: &[i64],
+) -> Result<std::collections::HashMap<i64, Vec<NewOrderItemDto>>> {
+    use std::collections::HashMap;
+    let mut map: HashMap<i64, Vec<NewOrderItemDto>> = HashMap::new();
+    if order_ids.is_empty() {
+        return Ok(map);
+    }
+    // Shopee list rows carry no product title — resolve display names from
+    // series maps / product catalog the same way packing PDFs do.
+    let catalog = crate::batch::load_catalog_name_map(pool).await?;
+    let rows = sqlx::query(
+        r#"
+        SELECT order_id, sku, variant_attr,
+               COALESCE(
+                   NULLIF(item_name, ''),
+                   NULLIF(payload->>'itemName', ''),
+                   NULLIF(payload->>'productName', ''),
+                   NULLIF(payload->>'title', '')
+               ) AS item_name,
+               quantity,
+               unit_price::text AS unit_price,
+               amount::text AS amount,
+               COALESCE(
+                   NULLIF(image_url, ''),
+                   NULLIF(payload->>'imgUrl', ''),
+                   NULLIF(payload->>'image', ''),
+                   NULLIF(payload->>'cosImage', ''),
+                   NULLIF(payload->>'imageUrl', '')
+               ) AS image_url
+        FROM order_items
+        WHERE order_id = ANY($1)
+        ORDER BY order_id, line_no ASC
+        "#,
+    )
+    .bind(order_ids)
+    .fetch_all(pool)
+    .await?;
+
+    for row in rows {
+        let order_id: i64 = row.get("order_id");
+        let sku: Option<String> = row.get("sku");
+        let raw_name: Option<String> = row.get("item_name");
+        let resolved = crate::product_names::resolve_display_name(
+            sku.as_deref().unwrap_or(""),
+            raw_name.as_deref(),
+            &catalog,
+        );
+        map.entry(order_id).or_default().push(NewOrderItemDto {
+            sku,
+            item_name: Some(resolved),
+            variant_attr: row.get("variant_attr"),
+            quantity: row.get("quantity"),
+            unit_price: opt_numeric(&row, "unit_price"),
+            amount: opt_numeric(&row, "amount"),
+            image_url: row.get("image_url"),
+        });
+    }
+    Ok(map)
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CancelReportOrder {

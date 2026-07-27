@@ -10,8 +10,8 @@ use crate::batch::{self, BatchSession};
 use crate::catalog;
 use crate::screen_ocr::{self, OrderIdHit};
 use crate::store::{
-    cancel_daily_report, find_by_platform_order_id, list_events_since, CancelDailyReport,
-    OrderDetailDto, OutboxEvent,
+    cancel_daily_report, find_by_platform_order_id, list_events_since, list_new_orders,
+    CancelDailyReport, NewOrdersResponse, OrderDetailDto, OutboxEvent,
 };
 use axum::extract::{DefaultBodyLimit, FromRequest, Multipart, Path, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
@@ -57,6 +57,7 @@ pub fn router(state: ApiState) -> Router {
             get(lookup_by_platform_id),
         )
         .route("/v1/orders/events", get(events))
+        .route("/v1/orders/new", get(orders_new))
         .route("/v1/reports/in-cancel/daily", get(cancel_report))
         // Ops batches (pick lists)
         .route("/v1/batches/backlog", get(batches_backlog))
@@ -549,6 +550,31 @@ async fn cancel_report(
 }
 
 // ---------------------------------------------------------------------------
+// Ops feed: incoming (state=new) orders
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+struct NewOrdersQuery {
+    account: Option<String>,
+    limit: Option<i64>,
+}
+
+/// GET `/v1/orders/new?limit=&account=` — all `state=new` orders with line
+/// items (image, title, variant, price) for the ops incoming-orders table.
+async fn orders_new(
+    State(st): State<ApiState>,
+    headers: HeaderMap,
+    Query(q): Query<NewOrdersQuery>,
+) -> std::result::Result<Json<NewOrdersResponse>, ApiError> {
+    check_auth(&st, &headers)?;
+    let account_id = resolve_account_id(&st.pool, q.account.as_deref()).await?;
+    let resp = list_new_orders(&st.pool, account_id, q.limit.unwrap_or(500))
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(resp))
+}
+
+// ---------------------------------------------------------------------------
 // Ops batches
 // ---------------------------------------------------------------------------
 
@@ -903,6 +929,7 @@ mod tests {
         // Source-level contract: router registers these exact paths.
         let src = include_str!("api.rs");
         for path in [
+            "/v1/orders/new",
             "/v1/batches/backlog",
             "/v1/batches",
             "/v1/batches/{id}",

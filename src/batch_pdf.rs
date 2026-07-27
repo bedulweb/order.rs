@@ -273,7 +273,7 @@ struct PageState {
     y: f32,
 }
 
-fn layer_of<'a>(doc: &'a PdfDocumentReference, st: &PageState) -> PdfLayerReference {
+fn layer_of(doc: &PdfDocumentReference, st: &PageState) -> PdfLayerReference {
     doc.get_page(st.page).get_layer(st.layer)
 }
 

@@ -117,7 +117,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "platform": r.get::<String, _>("platform"),
             "carrier": carrier_display(buyer.as_deref(), ship.as_deref(), name.as_deref()),
             "isUrgent": is_urgent_carrier(buyer.as_deref(), ship.as_deref(), name.as_deref()),
-            "orderedAtWib": ordered.map(|d| format_wib(d)),
+            "orderedAtWib": ordered.map(format_wib),
             "state": r.get::<String, _>("state"),
             "items": by_oid.get(&oid).cloned().unwrap_or_default(),
         }));

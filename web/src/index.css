@@ -11,6 +11,7 @@
     --animate-toast-success-even: toast-success-even 0.32s cubic-bezier(0.5, 1, 0.89, 1);
     --animate-toast-error-odd: toast-error-odd 0.28s cubic-bezier(0.5, 1, 0.89, 1);
     --animate-toast-error-even: toast-error-even 0.28s cubic-bezier(0.5, 1, 0.89, 1);
+    --animate-row-flash: row-flash 2.4s ease-out;
     --font-heading: 'Inter', sans-serif;
     --font-mono: ui-monospace, 'SFMono-Regular', Menlo, Monaco, Consolas, monospace;
     --font-sans: 'Inter', sans-serif;
@@ -118,6 +119,14 @@
         }
   100% {
     scale: 1;
+        }
+    }
+  @keyframes row-flash {
+    0% {
+      background-color: color-mix(in srgb, var(--color-emerald-500) 16%, transparent);
+        }
+    100% {
+      background-color: transparent;
         }
     }
   @keyframes toast-error-even {

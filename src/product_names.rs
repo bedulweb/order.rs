@@ -82,14 +82,14 @@ pub fn strip_color_segment(sku: &str) -> String {
     }
 }
 
-fn prefix_match<'a>(sku_n: &str, key: &'a str) -> bool {
+fn prefix_match(sku_n: &str, key: &str) -> bool {
     sku_n == key || sku_n.starts_with(&format!("{key}-"))
 }
 
 fn series_name(sku_n: &str) -> Option<&'static str> {
     // Prefer longer keys first (OB-0125B before OB-0125)
     let mut keys: Vec<_> = SERIES_MAP.iter().collect();
-    keys.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+    keys.sort_by_key(|k| std::cmp::Reverse(k.0.len()));
     for (k, name) in keys {
         if prefix_match(sku_n, k) {
             return Some(*name);

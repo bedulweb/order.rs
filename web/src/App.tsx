@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   BrowserRouter,
   Link,
@@ -19,6 +19,7 @@ import {
   fetchBatchesToday,
   regenerateBatchPdf,
   fetchCatalogProducts,
+  fetchNewOrders,
   formatIdr,
   formatWib,
   getToken,
@@ -31,6 +32,9 @@ import {
   type BatchSummary,
   type BatchesListResponse,
   type CatalogProduct,
+  type NewOrder,
+  type NewOrderItem,
+  type NewOrdersResponse,
 } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -101,6 +105,7 @@ function AppRoutes() {
             <NavBtn to="/" end>
               Home
             </NavBtn>
+            <NavBtn to="/order-masuk">Order Masuk</NavBtn>
             <NavBtn to="/backlog">Backlog</NavBtn>
             <NavBtn to="/products">Products</NavBtn>
             <Button
@@ -120,6 +125,7 @@ function AppRoutes() {
       <main className="mx-auto max-w-6xl px-4 py-6 text-left">
         <Routes>
           <Route path="/" element={<OpsHome />} />
+          <Route path="/order-masuk" element={<NewOrdersPage />} />
           <Route path="/backlog" element={<BacklogPage />} />
           <Route path="/products" element={<ProductsPage />} />
           <Route path="/batches/:id" element={<BatchDetailPage />} />
@@ -517,6 +523,395 @@ function BatchesTable({ rows }: { rows: BatchSummary[] }) {
         ))}
       </TableBody>
     </Table>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Order Masuk — incoming orders feed (state=new)
+// ---------------------------------------------------------------------------
+
+const PLATFORM_BADGE: [string, string][] = [
+  ["shopee", "bg-orange-500/10 text-orange-700 dark:text-orange-400"],
+  ["tiktok", "bg-neutral-800/8 text-neutral-800 dark:bg-neutral-100/12 dark:text-neutral-200"],
+  ["tokopedia", "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"],
+  ["lazada", "bg-blue-500/10 text-blue-700 dark:text-blue-400"],
+];
+
+function platformBadgeClass(platform: string): string {
+  const key = platform.trim().toLowerCase();
+  for (const [name, cls] of PLATFORM_BADGE) {
+    if (key.includes(name)) return cls;
+  }
+  return "bg-secondary text-secondary-foreground";
+}
+
+function formatWibShort(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  try {
+    return new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Asia/Jakarta",
+      day: "2-digit",
+      month: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).format(new Date(iso));
+  } catch {
+    return iso;
+  }
+}
+
+function parseMoney(s: string | null | undefined): number | null {
+  if (s == null || s.trim() === "") return null;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : null;
+}
+
+function Thumb({ src, alt }: { src: string | null; alt: string }) {
+  const [broken, setBroken] = useState(false);
+  if (!src || broken) {
+    return (
+      <div
+        className="flex size-12 shrink-0 items-center justify-center rounded-lg border bg-muted/50 text-muted-foreground/60"
+        title="Tidak ada gambar"
+      >
+        <svg
+          viewBox="0 0 24 24"
+          className="size-5"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden
+        >
+          <path d="M21 8l-9-5-9 5 9 5 9-5zM3 8v8l9 5 9-5V8" />
+        </svg>
+      </div>
+    );
+  }
+  return (
+    <img
+      src={src}
+      alt={alt}
+      loading="lazy"
+      referrerPolicy="no-referrer"
+      onError={() => setBroken(true)}
+      className="size-12 shrink-0 rounded-lg border object-cover shadow-xs/50 transition-transform duration-200 hover:scale-110 hover:shadow-md"
+    />
+  );
+}
+
+function FeedStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex flex-col gap-0.5">
+      <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+        {label}
+      </span>
+      <span className="font-heading text-xl font-semibold tabular-nums leading-none">
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function NewOrdersPage() {
+  const [data, setData] = useState<NewOrdersResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [autoRefresh, setAutoRefresh] = useState(true);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [flashIds, setFlashIds] = useState<Set<number>>(new Set());
+  const knownIds = useRef<Set<number> | null>(null);
+
+  const load = useCallback(async (silent: boolean) => {
+    if (!silent) setLoading(true);
+    setRefreshing(true);
+    setError(null);
+    try {
+      const resp = await fetchNewOrders(500);
+      const ids = resp.orders.map((o) => o.orderId);
+      const prev = knownIds.current;
+      if (prev) {
+        setFlashIds(new Set(ids.filter((id) => !prev.has(id))));
+        knownIds.current = new Set([...prev, ...ids]);
+      } else {
+        setFlashIds(new Set());
+        knownIds.current = new Set(ids);
+      }
+      setData(resp);
+      setLastUpdated(new Date());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load");
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load(false);
+  }, [load]);
+
+  useEffect(() => {
+    if (!autoRefresh) return;
+    const t = setInterval(() => void load(true), 30_000);
+    return () => clearInterval(t);
+  }, [autoRefresh, load]);
+
+  const orders: NewOrder[] = data?.orders ?? [];
+  const totals = useMemo(() => {
+    let qty = 0;
+    let amount = 0;
+    for (const o of orders) {
+      qty += o.itemTotalNum ?? o.items.reduce((s, it) => s + it.quantity, 0);
+      amount += parseMoney(o.amount) ?? 0;
+    }
+    return { qty, amount };
+  }, [orders]);
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <Button size="sm" variant="ghost" render={<Link to="/" />}>
+            ← Home
+          </Button>
+          <h1 className="font-heading text-2xl font-semibold tracking-tight">
+            Order masuk
+          </h1>
+          <p className="text-muted-foreground text-sm">
+            Semua order state=new · terbaru di atas · satu baris per item
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          {lastUpdated && (
+            <span className="text-muted-foreground text-xs">
+              Diperbarui{" "}
+              {lastUpdated.toLocaleTimeString("id-ID", {
+                timeZone: "Asia/Jakarta",
+              })}{" "}
+              WIB
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={() => setAutoRefresh((v) => !v)}
+            className={cn(
+              "inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium transition-colors",
+              autoRefresh
+                ? "border-success/40 bg-success/8 text-success-foreground"
+                : "border-input bg-popover text-muted-foreground hover:bg-accent/50",
+            )}
+            title="Refresh otomatis tiap 30 detik"
+          >
+            <span className="relative flex size-1.5">
+              {autoRefresh && (
+                <span className="absolute inline-flex size-full animate-ping rounded-full bg-success opacity-60" />
+              )}
+              <span className="relative inline-flex size-1.5 rounded-full bg-current" />
+            </span>
+            Live · 30 dtk
+          </button>
+          <Button
+            variant="outline"
+            size="sm"
+            loading={refreshing}
+            onClick={() => void load(true)}
+          >
+            Refresh
+          </Button>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-x-8 gap-y-3 rounded-xl border bg-card px-4 py-3">
+        <FeedStat
+          label="Order baru"
+          value={loading ? "…" : String(data?.total ?? 0)}
+        />
+        <FeedStat label="Qty item" value={loading ? "…" : String(totals.qty)} />
+        <FeedStat
+          label="Nilai order"
+          value={loading ? "…" : formatIdr(totals.amount)}
+        />
+      </div>
+
+      {error && (
+        <p className="text-destructive text-sm" role="alert">
+          {error}
+        </p>
+      )}
+
+      {loading ? (
+        <div className="flex flex-col gap-2">
+          <Skeleton className="h-16 w-full" />
+          <Skeleton className="h-16 w-full" />
+          <Skeleton className="h-16 w-full" />
+          <Skeleton className="h-16 w-full" />
+        </div>
+      ) : orders.length === 0 ? (
+        <Empty className="py-16">
+          <p className="font-medium">Belum ada order masuk</p>
+          <p className="text-muted-foreground text-sm">
+            Order state=new muncul otomatis setelah sync (~60 detik).
+          </p>
+        </Empty>
+      ) : (
+        <Card>
+          <CardPanel className="pt-4">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-16">Gambar</TableHead>
+                  <TableHead>Judul</TableHead>
+                  <TableHead>Varian</TableHead>
+                  <TableHead className="text-right">Harga</TableHead>
+                  <TableHead>Platform</TableHead>
+                  <TableHead>Nama Buyer</TableHead>
+                  <TableHead>Ekspedisi</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {orders.map((o) => {
+                  const items: (NewOrderItem | null)[] =
+                    o.items.length > 0 ? o.items : [null];
+                  const span = items.length;
+                  const buyer =
+                    o.buyerUsername?.trim() || o.contactPerson?.trim() || null;
+                  const orderQty =
+                    o.itemTotalNum ??
+                    o.items.reduce((s, it) => s + it.quantity, 0);
+                  return items.map((it, idx) => (
+                    <TableRow
+                      key={`${o.orderId}-${idx}`}
+                      className={
+                        flashIds.has(o.orderId) ? "animate-row-flash" : undefined
+                      }
+                    >
+                      <TableCell>
+                        <Thumb
+                          src={it?.imageUrl ?? null}
+                          alt={it?.itemName ?? o.platformOrderId}
+                        />
+                      </TableCell>
+                      <TableCell className="max-w-[26rem] whitespace-normal">
+                        {it ? (
+                          <div className="flex flex-col gap-0.5 py-0.5">
+                            <div className="flex items-start gap-1.5">
+                              <span className="line-clamp-2 font-medium leading-snug">
+                                {it.itemName?.trim() || it.sku || "—"}
+                              </span>
+                              {it.quantity > 1 && (
+                                <Badge
+                                  variant="secondary"
+                                  size="sm"
+                                  className="mt-0.5 shrink-0 tabular-nums"
+                                >
+                                  ×{it.quantity}
+                                </Badge>
+                              )}
+                            </div>
+                            {it.sku && (
+                              <span className="font-mono text-[11px] text-muted-foreground">
+                                {it.sku}
+                              </span>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-muted-foreground text-sm">
+                            Tanpa item
+                          </span>
+                        )}
+                      </TableCell>
+                      <TableCell className="max-w-[12rem] whitespace-normal text-muted-foreground text-sm">
+                        {it?.variantAttr?.trim() || "—"}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        {it ? (
+                          <div className="flex flex-col items-end gap-0.5">
+                            <span className="font-medium tabular-nums">
+                              {formatIdr(parseMoney(it.unitPrice))}
+                            </span>
+                            {it.quantity > 1 && (
+                              <span className="text-[11px] text-muted-foreground tabular-nums">
+                                {it.quantity} ×{" "}
+                                {formatIdr(parseMoney(it.unitPrice))} ={" "}
+                                {formatIdr(
+                                  parseMoney(it.amount) ??
+                                    (parseMoney(it.unitPrice) ?? 0) *
+                                      it.quantity,
+                                )}
+                              </span>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-muted-foreground">—</span>
+                        )}
+                      </TableCell>
+                      {idx === 0 && (
+                        <>
+                          <TableCell
+                            rowSpan={span}
+                            className="align-top bg-muted/30"
+                          >
+                            <div className="flex flex-col items-start gap-1 py-0.5">
+                              <Badge
+                                className={cn(
+                                  "capitalize",
+                                  platformBadgeClass(o.platform),
+                                )}
+                              >
+                                {o.platform}
+                              </Badge>
+                              <span className="font-mono text-[11px] text-muted-foreground">
+                                {o.platformOrderId}
+                              </span>
+                              <span className="text-[11px] text-muted-foreground">
+                                {formatWibShort(o.orderedAt)} WIB
+                              </span>
+                            </div>
+                          </TableCell>
+                          <TableCell
+                            rowSpan={span}
+                            className="align-top bg-muted/30"
+                          >
+                            <div className="flex flex-col gap-0.5 py-0.5">
+                              <span className="font-medium leading-snug">
+                                {buyer ?? "—"}
+                              </span>
+                              <span className="text-[11px] text-muted-foreground">
+                                {orderQty} barang ·{" "}
+                                {formatIdr(parseMoney(o.amount))}
+                              </span>
+                            </div>
+                          </TableCell>
+                          <TableCell
+                            rowSpan={span}
+                            className="align-top bg-muted/30"
+                          >
+                            <div className="flex flex-col items-start gap-1 py-0.5">
+                              <span className="text-sm leading-snug">
+                                {o.carrier?.trim() || "—"}
+                              </span>
+                              {o.isUrgent && (
+                                <Badge variant="warning" size="sm">
+                                  Urgent
+                                </Badge>
+                              )}
+                            </div>
+                          </TableCell>
+                        </>
+                      )}
+                    </TableRow>
+                  ));
+                })}
+              </TableBody>
+            </Table>
+          </CardPanel>
+        </Card>
+      )}
+    </div>
   );
 }
 

@@ -136,6 +136,44 @@ export function fetchBacklog(limit = 500): Promise<BacklogResponse> {
   return request(`/v1/batches/backlog?limit=${limit}`);
 }
 
+// ---------------------------------------------------------------------------
+// Incoming orders feed (state=new)
+// ---------------------------------------------------------------------------
+
+export type NewOrderItem = {
+  sku: string | null;
+  itemName: string | null;
+  variantAttr: string | null;
+  quantity: number;
+  unitPrice: string | null;
+  amount: string | null;
+  imageUrl: string | null;
+};
+
+export type NewOrder = {
+  orderId: number;
+  platformOrderId: string;
+  platform: string;
+  shopName: string | null;
+  buyerUsername: string | null;
+  contactPerson: string | null;
+  carrier: string | null;
+  isUrgent: boolean;
+  amount: string | null;
+  itemTotalNum: number | null;
+  orderedAt: string | null;
+  items: NewOrderItem[];
+};
+
+export type NewOrdersResponse = {
+  total: number;
+  orders: NewOrder[];
+};
+
+export function fetchNewOrders(limit = 500): Promise<NewOrdersResponse> {
+  return request(`/v1/orders/new?limit=${limit}`);
+}
+
 export function fetchBatchesToday(date?: string): Promise<BatchesListResponse> {
   const q = date ? `?date=${encodeURIComponent(date)}` : "";
   return request(`/v1/batches${q}`);

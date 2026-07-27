@@ -143,7 +143,7 @@ async fn db_lookup_hit_and_miss_and_idempotent_import() {
         hpp: 12_345,
     };
 
-    let r1 = upsert_products(&pool, &[product.clone()])
+    let r1 = upsert_products(&pool, std::slice::from_ref(&product))
         .await
         .expect("first upsert");
     assert_eq!(r1.inserted, 1);
