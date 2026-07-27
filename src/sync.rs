@@ -622,6 +622,7 @@ pub async fn sync_historical_all(
 #[derive(Debug, Clone)]
 pub struct WorkerConfig {
     pub new_interval_secs: u64,
+    pub reconcile_cap: i64,
     pub cancel_hour_local: u32,
     pub cancel_minute_local: u32,
     pub wa_webhook_url: Option<String>,
@@ -635,6 +636,7 @@ impl Default for WorkerConfig {
     fn default() -> Self {
         Self {
             new_interval_secs: 60,
+            reconcile_cap: 15,
             cancel_hour_local: 17,
             cancel_minute_local: 0,
             wa_webhook_url: None,
@@ -718,16 +720,17 @@ impl WorkerState {
 
     /// Heal stale `state = 'new'` rows after a successful new-bucket pass.
     /// Window scales with the sync interval (3×, clamped to 3–60 minutes);
-    /// capped per cycle so a one-time backlog drains gently.
+    /// per-cycle cap is configurable (RECONCILE_CAP) so a one-time backlog
+    /// can be drained fast, then turned back down.
     async fn run_reconcile(&mut self, ctx: &SyncContext) -> Result<ReconcileStats> {
-        const CAP: i64 = 15;
+        let cap = self.app_cfg.reconcile_cap;
         let stale_after = (self.app_cfg.new_interval_secs.saturating_mul(3)).clamp(180, 3600);
-        match reconcile_stale_new_orders(&self.pool, &self.api, ctx, stale_after, CAP).await {
+        match reconcile_stale_new_orders(&self.pool, &self.api, ctx, stale_after, cap).await {
             Ok(v) => Ok(v),
             Err(e) if client::is_auth_error(&e) && self.app_cfg.auto_relogin => {
                 warn!(error = %e, "auth expired during reconcile — re-login once");
                 self.relogin().await?;
-                reconcile_stale_new_orders(&self.pool, &self.api, ctx, stale_after, CAP).await
+                reconcile_stale_new_orders(&self.pool, &self.api, ctx, stale_after, cap).await
             }
             Err(e) => Err(e),
         }

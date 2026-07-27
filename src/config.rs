@@ -19,6 +19,8 @@ pub struct Config {
     pub api_token: Option<String>,
     pub api_bind: String,
     pub sync_new_interval_secs: u64,
+    /// Max stale orders healed per reconcile cycle (default 15).
+    pub reconcile_cap: i64,
     pub cancel_hour_local: u32,
     pub cancel_minute_local: u32,
     pub wa_webhook_url: Option<String>,
@@ -78,6 +80,11 @@ impl Config {
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(60)
                 .max(15),
+            reconcile_cap: env::var("RECONCILE_CAP")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(15)
+                .clamp(1, 500),
             cancel_hour_local: env::var("CANCEL_HOUR_LOCAL")
                 .ok()
                 .and_then(|s| s.parse().ok())

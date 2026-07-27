@@ -353,6 +353,7 @@ async fn main() -> anyhow::Result<()> {
             db::ping(&pool).await?;
             let wcfg = sync::WorkerConfig {
                 new_interval_secs: cfg.sync_new_interval_secs,
+                reconcile_cap: cfg.reconcile_cap,
                 cancel_hour_local: cfg.cancel_hour_local,
                 cancel_minute_local: cfg.cancel_minute_local,
                 wa_webhook_url: cfg.wa_webhook_url.clone(),

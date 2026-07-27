@@ -165,7 +165,7 @@ Show `message` as-is in the app UI.
 ## Worker behaviour
 
 - Every `SYNC_NEW_INTERVAL_SECS` (default 60): pull `status=new`, upsert, enqueue `order.created` on first see.
-- After each successful new pass: reconcile stale state — rows still `state=new` whose `synced_at` fell behind (i.e. absent from the bucket) are looked up via all-order search and healed to their true state (shipped/completed/canceled). Capped at 15 per cycle, newest-stale first, so the DB converges to BigSeller's truth without pulling large buckets.
+- After each successful new pass: reconcile stale state — rows still `state=new` whose `synced_at` fell behind (i.e. absent from the bucket) are looked up via all-order search and healed to their true state (shipped/completed/canceled). Newest-stale first, paced ~1.2s between searches, capped per cycle by `RECONCILE_CAP` (default 15; raise temporarily to drain a backlog faster), so the DB converges to BigSeller's truth without pulling large buckets.
 - Once per local day at `CANCEL_HOUR_LOCAL`:`CANCEL_MINUTE_LOCAL` (default 17:00): pull cancel-related buckets.
 - On BigSeller auth expiry (code `2001`): auto re-login when `AUTO_RELOGIN=true`.
 - Optional: POST outbox events to `WA_WEBHOOK_URL`.
