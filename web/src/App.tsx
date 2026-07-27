@@ -10,6 +10,27 @@ import {
   useParams,
 } from "react-router-dom";
 import {
+  flexRender,
+  getCoreRowModel,
+  getFilteredRowModel,
+  getPaginationRowModel,
+  getSortedRowModel,
+  useReactTable,
+  type Column,
+  type ColumnDef,
+  type PaginationState,
+  type SortingState,
+} from "@tanstack/react-table";
+import {
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
+  ChevronLeft,
+  ChevronRight,
+  Search,
+  Zap,
+} from "lucide-react";
+import {
   ApiError,
   clearToken,
   createBatch,
@@ -56,6 +77,7 @@ import {
 } from "@/components/ui/dialog";
 import { Empty } from "@/components/ui/empty";
 import { Input } from "@/components/ui/input";
+import { Kbd } from "@/components/ui/kbd";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
@@ -615,6 +637,238 @@ function FeedStat({ label, value }: { label: string; value: string }) {
   );
 }
 
+function buyerName(o: NewOrder): string | null {
+  return o.buyerUsername?.trim() || o.contactPerson?.trim() || null;
+}
+
+/** One table row = one order item, carrying its parent order for context. */
+type FeedRow = {
+  orderId: number;
+  order: NewOrder;
+  item: NewOrderItem | null;
+};
+
+/** Order-level columns rendered once per contiguous order group (rowSpan). */
+const ORDER_COL_IDS = new Set(["platform", "buyer", "ekspedisi"]);
+
+const FEED_CELL_CLASS: Record<string, string> = {
+  judul: "max-w-[26rem] whitespace-normal",
+  varian: "max-w-[12rem] whitespace-normal",
+  buyer: "max-w-[12rem] whitespace-normal",
+};
+
+function SortableHead({
+  column,
+  children,
+}: {
+  column: Column<FeedRow, unknown>;
+  children: React.ReactNode;
+}) {
+  const sorted = column.getIsSorted();
+  return (
+    <button
+      type="button"
+      onClick={() => column.toggleSorting(sorted === "asc")}
+      title={sorted ? "Klik lagi untuk reset urutan" : "Urutkan"}
+      className={cn(
+        "group -mx-1 inline-flex h-6 cursor-pointer items-center gap-1 rounded-md px-1 transition-colors hover:bg-accent/70 hover:text-foreground",
+        sorted && "text-foreground",
+      )}
+    >
+      {children}
+      {sorted === "asc" ? (
+        <ArrowUp className="size-3 shrink-0" />
+      ) : sorted === "desc" ? (
+        <ArrowDown className="size-3 shrink-0" />
+      ) : (
+        <ArrowUpDown className="size-3 shrink-0 opacity-0 transition-opacity group-hover:opacity-50" />
+      )}
+    </button>
+  );
+}
+
+function FilterChip({
+  active,
+  activeClass,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  activeClass?: string;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium capitalize transition-all duration-150 active:scale-[0.97]",
+        active
+          ? (activeClass ??
+              "border-primary bg-primary text-primary-foreground shadow-xs")
+          : "border-input bg-popover text-foreground hover:bg-accent/50",
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
+const feedColumns: ColumnDef<FeedRow>[] = [
+  {
+    id: "gambar",
+    header: "Gambar",
+    enableSorting: false,
+    cell: ({ row }) => (
+      <Thumb
+        src={row.original.item?.imageUrl ?? null}
+        alt={row.original.item?.itemName ?? row.original.order.platformOrderId}
+      />
+    ),
+  },
+  {
+    id: "judul",
+    header: ({ column }) => <SortableHead column={column}>Judul</SortableHead>,
+    accessorFn: (r) => r.item?.itemName ?? r.item?.sku ?? "",
+    cell: ({ row }) => {
+      const it = row.original.item;
+      if (!it) {
+        return <span className="text-muted-foreground text-sm">Tanpa item</span>;
+      }
+      return (
+        <div className="flex flex-col gap-0.5 py-0.5">
+          <div className="flex items-start gap-1.5">
+            <span className="line-clamp-2 font-medium leading-snug">
+              {it.itemName?.trim() || it.sku || "—"}
+            </span>
+            {it.quantity > 1 && (
+              <Badge
+                variant="secondary"
+                size="sm"
+                className="mt-0.5 shrink-0 tabular-nums"
+              >
+                ×{it.quantity}
+              </Badge>
+            )}
+          </div>
+          {it.sku && (
+            <span className="font-mono text-[11px] text-muted-foreground">
+              {it.sku}
+            </span>
+          )}
+        </div>
+      );
+    },
+  },
+  {
+    id: "varian",
+    header: ({ column }) => (
+      <SortableHead column={column}>Varian</SortableHead>
+    ),
+    accessorFn: (r) => r.item?.variantAttr ?? "",
+    cell: ({ row }) => (
+      <span className="text-muted-foreground text-sm">
+        {row.original.item?.variantAttr?.trim() || "—"}
+      </span>
+    ),
+  },
+  {
+    id: "harga",
+    header: ({ column }) => (
+      <SortableHead column={column}>Harga</SortableHead>
+    ),
+    accessorFn: (r) => parseMoney(r.item?.unitPrice) ?? 0,
+    cell: ({ row }) => {
+      const it = row.original.item;
+      if (!it) return <span className="text-muted-foreground">—</span>;
+      const unit = parseMoney(it.unitPrice);
+      const line = parseMoney(it.amount) ?? (unit ?? 0) * it.quantity;
+      return (
+        <div className="flex flex-col items-end gap-0.5">
+          <span className="font-medium tabular-nums">{formatIdr(unit)}</span>
+          {it.quantity > 1 && (
+            <span className="text-[11px] text-muted-foreground tabular-nums">
+              {it.quantity} × {formatIdr(unit)} = {formatIdr(line)}
+            </span>
+          )}
+        </div>
+      );
+    },
+  },
+  {
+    id: "platform",
+    header: ({ column }) => (
+      <SortableHead column={column}>Platform</SortableHead>
+    ),
+    accessorFn: (r) => r.order.platform,
+    cell: ({ row }) => {
+      const o = row.original.order;
+      return (
+        <div className="flex flex-col items-start gap-1 py-0.5">
+          <Badge className={cn("capitalize", platformBadgeClass(o.platform))}>
+            {o.platform}
+          </Badge>
+          <span className="font-mono text-[11px] text-muted-foreground">
+            {o.platformOrderId}
+          </span>
+          <span className="text-[11px] text-muted-foreground">
+            {formatWibShort(o.orderedAt)} WIB
+          </span>
+        </div>
+      );
+    },
+  },
+  {
+    id: "buyer",
+    header: ({ column }) => (
+      <SortableHead column={column}>Nama Buyer</SortableHead>
+    ),
+    accessorFn: (r) => buyerName(r.order) ?? "",
+    cell: ({ row }) => {
+      const o = row.original.order;
+      const qty = o.itemTotalNum ?? o.items.reduce((s, it) => s + it.quantity, 0);
+      return (
+        <div className="flex flex-col gap-0.5 py-0.5">
+          <span className="font-medium leading-snug">{buyerName(o) ?? "—"}</span>
+          <span className="text-[11px] text-muted-foreground">
+            {qty} barang · {formatIdr(parseMoney(o.amount))}
+          </span>
+        </div>
+      );
+    },
+  },
+  {
+    id: "ekspedisi",
+    header: ({ column }) => (
+      <SortableHead column={column}>Ekspedisi</SortableHead>
+    ),
+    accessorFn: (r) => r.order.carrier ?? "",
+    cell: ({ row }) => {
+      const o = row.original.order;
+      return (
+        <div className="flex flex-col items-start gap-1 py-0.5">
+          <span className="text-sm leading-snug">{o.carrier?.trim() || "—"}</span>
+          {o.isUrgent && (
+            <Badge variant="warning" size="sm">
+              Urgent
+            </Badge>
+          )}
+        </div>
+      );
+    },
+  },
+  {
+    // Hidden — extra search tokens (nomor pesanan, SKU, nama toko).
+    id: "meta",
+    accessorFn: (r) =>
+      [r.order.platformOrderId, r.item?.sku ?? "", r.order.shopName ?? ""].join(
+        " ",
+      ),
+    enableSorting: false,
+  },
+];
+
 function NewOrdersPage() {
   const [data, setData] = useState<NewOrdersResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -624,6 +878,16 @@ function NewOrdersPage() {
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [flashIds, setFlashIds] = useState<Set<number>>(new Set());
   const knownIds = useRef<Set<number> | null>(null);
+
+  const [sorting, setSorting] = useState<SortingState>([]);
+  const [globalFilter, setGlobalFilter] = useState("");
+  const [platformFilter, setPlatformFilter] = useState<string | null>(null);
+  const [urgentOnly, setUrgentOnly] = useState(false);
+  const [pagination, setPagination] = useState<PaginationState>({
+    pageIndex: 0,
+    pageSize: 50,
+  });
+  const searchRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async (silent: boolean) => {
     if (!silent) setLoading(true);
@@ -660,7 +924,48 @@ function NewOrdersPage() {
     return () => clearInterval(t);
   }, [autoRefresh, load]);
 
-  const orders: NewOrder[] = data?.orders ?? [];
+  // "/" focuses the search field from anywhere on the page.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (
+        e.key === "/" &&
+        tag !== "INPUT" &&
+        tag !== "TEXTAREA" &&
+        tag !== "SELECT"
+      ) {
+        e.preventDefault();
+        searchRef.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  const orders = useMemo<NewOrder[]>(() => data?.orders ?? [], [data]);
+
+  const platformFacets = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const o of orders) m.set(o.platform, (m.get(o.platform) ?? 0) + 1);
+    return [...m.entries()].sort((a, b) => b[1] - a[1]);
+  }, [orders]);
+
+  const feedRows = useMemo(() => {
+    const rows: FeedRow[] = [];
+    for (const o of orders) {
+      if (platformFilter && o.platform !== platformFilter) continue;
+      if (urgentOnly && !o.isUrgent) continue;
+      if (o.items.length === 0) {
+        rows.push({ orderId: o.orderId, order: o, item: null });
+        continue;
+      }
+      for (const it of o.items) {
+        rows.push({ orderId: o.orderId, order: o, item: it });
+      }
+    }
+    return rows;
+  }, [orders, platformFilter, urgentOnly]);
+
   const totals = useMemo(() => {
     let qty = 0;
     let amount = 0;
@@ -671,23 +976,164 @@ function NewOrdersPage() {
     return { qty, amount };
   }, [orders]);
 
+  const table = useReactTable({
+    data: feedRows,
+    columns: feedColumns,
+    state: { sorting, globalFilter, pagination },
+    initialState: { columnVisibility: { meta: false } },
+    onSortingChange: setSorting,
+    onGlobalFilterChange: setGlobalFilter,
+    onPaginationChange: setPagination,
+    autoResetPageIndex: false,
+    globalFilterFn: (row, columnId, filterValue) =>
+      String(row.getValue(columnId) ?? "")
+        .toLowerCase()
+        .includes(String(filterValue).toLowerCase()),
+    getCoreRowModel: getCoreRowModel(),
+    getSortedRowModel: getSortedRowModel(),
+    getFilteredRowModel: getFilteredRowModel(),
+    getPaginationRowModel: getPaginationRowModel(),
+  });
+
+  const visibleRows = table.getRowModel().rows;
+  const filteredTotal = table.getFilteredRowModel().rows.length;
+
+  // Contiguous same-order runs → rowSpan for the order-level columns.
+  const groupInfo = useMemo(() => {
+    const info: { start: boolean; span: number }[] = [];
+    for (let i = 0; i < visibleRows.length; i++) {
+      const prevId = i > 0 ? visibleRows[i - 1].original.orderId : null;
+      if (visibleRows[i].original.orderId !== prevId) {
+        let span = 1;
+        while (
+          i + span < visibleRows.length &&
+          visibleRows[i + span].original.orderId ===
+            visibleRows[i].original.orderId
+        ) {
+          span++;
+        }
+        info.push({ start: true, span });
+      } else {
+        info.push({ start: false, span: 0 });
+      }
+    }
+    return info;
+  }, [visibleRows]);
+
+  const filtersActive =
+    globalFilter !== "" || platformFilter !== null || urgentOnly;
+  const rangeStart =
+    filteredTotal === 0 ? 0 : pagination.pageIndex * pagination.pageSize + 1;
+  const rangeEnd = Math.min(rangeStart + pagination.pageSize - 1, filteredTotal);
+
+  function resetFilters() {
+    setGlobalFilter("");
+    setPlatformFilter(null);
+    setUrgentOnly(false);
+    table.setPageIndex(0);
+  }
+
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <Button size="sm" variant="ghost" render={<Link to="/" />}>
-            ← Home
-          </Button>
-          <h1 className="font-heading text-2xl font-semibold tracking-tight">
-            Order masuk
-          </h1>
-          <p className="text-muted-foreground text-sm">
-            Semua order state=new · terbaru di atas · satu baris per item
-          </p>
+      <div>
+        <Button size="sm" variant="ghost" render={<Link to="/" />}>
+          ← Home
+        </Button>
+        <h1 className="font-heading text-2xl font-semibold tracking-tight">
+          Order masuk
+        </h1>
+        <p className="text-muted-foreground text-sm">
+          Semua order state=new · terbaru di atas · klik header kolom untuk
+          mengurutkan
+        </p>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-x-8 gap-y-3 rounded-xl border bg-card px-4 py-3">
+        <FeedStat
+          label="Order baru"
+          value={loading ? "…" : String(data?.total ?? 0)}
+        />
+        <FeedStat label="Qty item" value={loading ? "…" : String(totals.qty)} />
+        <FeedStat
+          label="Nilai order"
+          value={loading ? "…" : formatIdr(totals.amount)}
+        />
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative w-full sm:w-72">
+          <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            ref={searchRef}
+            value={globalFilter}
+            onChange={(e) => {
+              setGlobalFilter(e.target.value);
+              table.setPageIndex(0);
+            }}
+            placeholder="Cari nomor pesanan, buyer, judul, SKU…"
+            className="pl-8 pr-9 text-sm"
+          />
+          <Kbd className="absolute top-1/2 right-2 -translate-y-1/2">/</Kbd>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
+
+        <div className="flex flex-wrap items-center gap-1.5">
+          <FilterChip
+            active={platformFilter === null}
+            onClick={() => {
+              setPlatformFilter(null);
+              table.setPageIndex(0);
+            }}
+          >
+            Semua
+            <span
+              className={cn(
+                "tabular-nums",
+                platformFilter === null
+                  ? "opacity-70"
+                  : "text-muted-foreground",
+              )}
+            >
+              {orders.length}
+            </span>
+          </FilterChip>
+          {platformFacets.map(([p, n]) => (
+            <FilterChip
+              key={p}
+              active={platformFilter === p}
+              onClick={() => {
+                setPlatformFilter((cur) => (cur === p ? null : p));
+                table.setPageIndex(0);
+              }}
+            >
+              {p}
+              <span
+                className={cn(
+                  "tabular-nums",
+                  platformFilter === p
+                    ? "opacity-70"
+                    : "text-muted-foreground",
+                )}
+              >
+                {n}
+              </span>
+            </FilterChip>
+          ))}
+          <FilterChip
+            active={urgentOnly}
+            activeClass="border-warning/50 bg-warning/10 text-warning-foreground"
+            onClick={() => {
+              setUrgentOnly((v) => !v);
+              table.setPageIndex(0);
+            }}
+          >
+            <Zap className="size-3" />
+            Urgent
+          </FilterChip>
+        </div>
+
+        <div className="ms-auto flex flex-wrap items-center gap-2">
           {lastUpdated && (
-            <span className="text-muted-foreground text-xs">
+            <span className="hidden text-muted-foreground text-xs sm:inline">
               Diperbarui{" "}
               {lastUpdated.toLocaleTimeString("id-ID", {
                 timeZone: "Asia/Jakarta",
@@ -725,18 +1171,6 @@ function NewOrdersPage() {
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center gap-x-8 gap-y-3 rounded-xl border bg-card px-4 py-3">
-        <FeedStat
-          label="Order baru"
-          value={loading ? "…" : String(data?.total ?? 0)}
-        />
-        <FeedStat label="Qty item" value={loading ? "…" : String(totals.qty)} />
-        <FeedStat
-          label="Nilai order"
-          value={loading ? "…" : formatIdr(totals.amount)}
-        />
-      </div>
-
       {error && (
         <p className="text-destructive text-sm" role="alert">
           {error}
@@ -758,158 +1192,139 @@ function NewOrdersPage() {
           </p>
         </Empty>
       ) : (
-        <Card>
-          <CardPanel className="pt-4">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="w-16">Gambar</TableHead>
-                  <TableHead>Judul</TableHead>
-                  <TableHead>Varian</TableHead>
-                  <TableHead className="text-right">Harga</TableHead>
-                  <TableHead>Platform</TableHead>
-                  <TableHead>Nama Buyer</TableHead>
-                  <TableHead>Ekspedisi</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {orders.map((o) => {
-                  const items: (NewOrderItem | null)[] =
-                    o.items.length > 0 ? o.items : [null];
-                  const span = items.length;
-                  const buyer =
-                    o.buyerUsername?.trim() || o.contactPerson?.trim() || null;
-                  const orderQty =
-                    o.itemTotalNum ??
-                    o.items.reduce((s, it) => s + it.quantity, 0);
-                  return items.map((it, idx) => (
-                    <TableRow
-                      key={`${o.orderId}-${idx}`}
-                      className={
-                        flashIds.has(o.orderId) ? "animate-row-flash" : undefined
-                      }
-                    >
-                      <TableCell>
-                        <Thumb
-                          src={it?.imageUrl ?? null}
-                          alt={it?.itemName ?? o.platformOrderId}
-                        />
-                      </TableCell>
-                      <TableCell className="max-w-[26rem] whitespace-normal">
-                        {it ? (
-                          <div className="flex flex-col gap-0.5 py-0.5">
-                            <div className="flex items-start gap-1.5">
-                              <span className="line-clamp-2 font-medium leading-snug">
-                                {it.itemName?.trim() || it.sku || "—"}
-                              </span>
-                              {it.quantity > 1 && (
-                                <Badge
-                                  variant="secondary"
-                                  size="sm"
-                                  className="mt-0.5 shrink-0 tabular-nums"
-                                >
-                                  ×{it.quantity}
-                                </Badge>
-                              )}
-                            </div>
-                            {it.sku && (
-                              <span className="font-mono text-[11px] text-muted-foreground">
-                                {it.sku}
-                              </span>
-                            )}
-                          </div>
-                        ) : (
-                          <span className="text-muted-foreground text-sm">
-                            Tanpa item
-                          </span>
-                        )}
-                      </TableCell>
-                      <TableCell className="max-w-[12rem] whitespace-normal text-muted-foreground text-sm">
-                        {it?.variantAttr?.trim() || "—"}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        {it ? (
-                          <div className="flex flex-col items-end gap-0.5">
-                            <span className="font-medium tabular-nums">
-                              {formatIdr(parseMoney(it.unitPrice))}
-                            </span>
-                            {it.quantity > 1 && (
-                              <span className="text-[11px] text-muted-foreground tabular-nums">
-                                {it.quantity} ×{" "}
-                                {formatIdr(parseMoney(it.unitPrice))} ={" "}
-                                {formatIdr(
-                                  parseMoney(it.amount) ??
-                                    (parseMoney(it.unitPrice) ?? 0) *
-                                      it.quantity,
-                                )}
-                              </span>
-                            )}
-                          </div>
-                        ) : (
-                          <span className="text-muted-foreground">—</span>
-                        )}
-                      </TableCell>
-                      {idx === 0 && (
-                        <>
-                          <TableCell
-                            rowSpan={span}
-                            className="align-top bg-muted/30"
-                          >
-                            <div className="flex flex-col items-start gap-1 py-0.5">
-                              <Badge
-                                className={cn(
-                                  "capitalize",
-                                  platformBadgeClass(o.platform),
-                                )}
-                              >
-                                {o.platform}
-                              </Badge>
-                              <span className="font-mono text-[11px] text-muted-foreground">
-                                {o.platformOrderId}
-                              </span>
-                              <span className="text-[11px] text-muted-foreground">
-                                {formatWibShort(o.orderedAt)} WIB
-                              </span>
-                            </div>
-                          </TableCell>
-                          <TableCell
-                            rowSpan={span}
-                            className="align-top bg-muted/30"
-                          >
-                            <div className="flex flex-col gap-0.5 py-0.5">
-                              <span className="font-medium leading-snug">
-                                {buyer ?? "—"}
-                              </span>
-                              <span className="text-[11px] text-muted-foreground">
-                                {orderQty} barang ·{" "}
-                                {formatIdr(parseMoney(o.amount))}
-                              </span>
-                            </div>
-                          </TableCell>
-                          <TableCell
-                            rowSpan={span}
-                            className="align-top bg-muted/30"
-                          >
-                            <div className="flex flex-col items-start gap-1 py-0.5">
-                              <span className="text-sm leading-snug">
-                                {o.carrier?.trim() || "—"}
-                              </span>
-                              {o.isUrgent && (
-                                <Badge variant="warning" size="sm">
-                                  Urgent
-                                </Badge>
-                              )}
-                            </div>
-                          </TableCell>
-                        </>
+        <>
+          <Table variant="card">
+            <TableHeader>
+              {table.getHeaderGroups().map((headerGroup) => (
+                <TableRow key={headerGroup.id}>
+                  {headerGroup.headers.map((header) => (
+                    <TableHead
+                      key={header.id}
+                      className={cn(
+                        header.column.id === "gambar" && "w-16",
+                        header.column.id === "harga" && "text-right",
                       )}
-                    </TableRow>
-                  ));
-                })}
-              </TableBody>
-            </Table>
-          </CardPanel>
-        </Card>
+                    >
+                      {flexRender(
+                        header.column.columnDef.header,
+                        header.getContext(),
+                      )}
+                    </TableHead>
+                  ))}
+                </TableRow>
+              ))}
+            </TableHeader>
+            <TableBody>
+              {visibleRows.length === 0 ? (
+                <TableRow>
+                  <TableCell
+                    colSpan={7}
+                    className="h-28 text-center whitespace-normal"
+                  >
+                    <div className="flex flex-col items-center gap-2.5">
+                      <p className="text-sm">
+                        Tidak ada hasil untuk pencarian / filter ini.
+                      </p>
+                      <Button size="sm" variant="outline" onClick={resetFilters}>
+                        Hapus filter
+                      </Button>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ) : (
+                visibleRows.map((row, i) => (
+                  <TableRow
+                    key={row.id}
+                    className={
+                      flashIds.has(row.original.orderId)
+                        ? "[&>td]:animate-row-flash"
+                        : undefined
+                    }
+                  >
+                    {row.getVisibleCells().map((cell) => {
+                      const isOrderCol = ORDER_COL_IDS.has(cell.column.id);
+                      const group = groupInfo[i];
+                      if (isOrderCol && !group.start) return null;
+                      return (
+                        <TableCell
+                          key={cell.id}
+                          rowSpan={isOrderCol ? group.span : undefined}
+                          className={cn(
+                            isOrderCol && "align-top",
+                            FEED_CELL_CLASS[cell.column.id],
+                          )}
+                        >
+                          {flexRender(
+                            cell.column.columnDef.cell,
+                            cell.getContext(),
+                          )}
+                        </TableCell>
+                      );
+                    })}
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p className="text-muted-foreground text-xs">
+              Item{" "}
+              <span className="font-medium text-foreground tabular-nums">
+                {rangeStart}
+              </span>
+              –
+              <span className="font-medium text-foreground tabular-nums">
+                {rangeEnd}
+              </span>{" "}
+              dari{" "}
+              <span className="font-medium text-foreground tabular-nums">
+                {filteredTotal}
+              </span>
+              {filtersActive ? " (terfilter)" : ""}
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                value={pagination.pageSize}
+                onChange={(e) => {
+                  table.setPageSize(Number(e.target.value));
+                  table.setPageIndex(0);
+                }}
+                className="h-7 cursor-pointer rounded-lg border border-input bg-popover px-1.5 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                {[25, 50, 100].map((n) => (
+                  <option key={n} value={n}>
+                    {n} / halaman
+                  </option>
+                ))}
+              </select>
+              <div className="flex items-center gap-1">
+                <Button
+                  size="xs"
+                  variant="outline"
+                  disabled={!table.getCanPreviousPage()}
+                  onClick={() => table.previousPage()}
+                  aria-label="Halaman sebelumnya"
+                >
+                  <ChevronLeft className="size-3.5" />
+                </Button>
+                <span className="px-1.5 text-muted-foreground text-xs tabular-nums">
+                  {pagination.pageIndex + 1} /{" "}
+                  {Math.max(table.getPageCount(), 1)}
+                </span>
+                <Button
+                  size="xs"
+                  variant="outline"
+                  disabled={!table.getCanNextPage()}
+                  onClick={() => table.nextPage()}
+                  aria-label="Halaman berikutnya"
+                >
+                  <ChevronRight className="size-3.5" />
+                </Button>
+              </div>
+            </div>
+          </div>
+        </>
       )}
     </div>
   );
