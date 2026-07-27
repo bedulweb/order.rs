@@ -832,7 +832,10 @@ function NewOrdersPage() {
   const knownIds = useRef<Set<number> | null>(null);
 
   // Bulk selection: order-level (rows are per item, many rows share an order).
-  const [selected, setSelected] = useState<Set<number>>(new Set());
+  // Full order objects are kept so grouping survives page changes.
+  const [selectedOrders, setSelectedOrders] = useState<
+    Map<number, NewOrder>
+  >(new Map());
   const [printing, setPrinting] = useState<BatchSession | null>(null);
   const [printResult, setPrintResult] = useState<SelectionBatchResult | null>(
     null,
@@ -931,8 +934,8 @@ function NewOrdersPage() {
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const rangeStart = total === 0 ? 0 : page * PAGE_SIZE + 1;
   const rangeEnd = Math.min((page + 1) * PAGE_SIZE, total);
-  /** Pack / Print only make sense on the Baru tab. */
-  const actionable = statusTab === "new";
+  /** Tabs that support selection + bulk actions (Baru: pack/print; Diproses: print resi). */
+  const selectable = statusTab === "new" || statusTab === "processing";
 
   const feedRows = useMemo(() => {
     const rows: FeedRow[] = [];
@@ -954,24 +957,24 @@ function NewOrdersPage() {
     [orders],
   );
 
-  function toggleOrder(id: number) {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+  function toggleOrder(order: NewOrder) {
+    setSelectedOrders((prev) => {
+      const next = new Map(prev);
+      if (next.has(order.orderId)) next.delete(order.orderId);
+      else next.set(order.orderId, order);
       return next;
     });
   }
 
   function selectAllUnprinted() {
-    setSelected(
-      new Set(
-        feedRows.filter((r) => !r.order.summaryPrinted).map((r) => r.orderId),
-      ),
-    );
+    setSelectedOrders((prev) => {
+      const next = new Map(prev);
+      for (const o of orders) if (!o.summaryPrinted) next.set(o.orderId, o);
+      return next;
+    });
   }
 
-  /** Distinct order ids currently visible (after filters). */
+  /** Distinct order ids on the current page (for select-all + rowSpan). */
   const pageOrderIds = useMemo(() => {
     const ids: number[] = [];
     const seen = new Set<number>();
@@ -985,32 +988,27 @@ function NewOrdersPage() {
   }, [feedRows]);
 
   const pageAllSelected =
-    pageOrderIds.length > 0 && pageOrderIds.every((id) => selected.has(id));
-  const pageSomeSelected = pageOrderIds.some((id) => selected.has(id));
+    pageOrderIds.length > 0 &&
+    pageOrderIds.every((id) => selectedOrders.has(id));
+  const pageSomeSelected = pageOrderIds.some((id) => selectedOrders.has(id));
 
   function togglePageOrders() {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (pageAllSelected) for (const id of pageOrderIds) next.delete(id);
-      else for (const id of pageOrderIds) next.add(id);
+    setSelectedOrders((prev) => {
+      const next = new Map(prev);
+      if (pageAllSelected) for (const o of orders) next.delete(o.orderId);
+      else for (const o of orders) next.set(o.orderId, o);
       return next;
     });
   }
-
-  const ordersById = useMemo(
-    () => new Map(orders.map((o) => [o.orderId, o])),
-    [orders],
-  );
 
   /** Selected orders that are not printed yet — only these can be claimed
    *  into a print batch. Pack, on the other hand, accepts the full selection. */
   const selectedUnprintedIds = useMemo(
     () =>
-      [...selected].filter((id) => {
-        const o = ordersById.get(id);
-        return o ? !o.summaryPrinted : false;
-      }),
-    [selected, ordersById],
+      [...selectedOrders.values()]
+        .filter((o) => !o.summaryPrinted)
+        .map((o) => o.orderId),
+    [selectedOrders],
   );
 
   async function printSelected(session: BatchSession) {
@@ -1020,7 +1018,7 @@ function NewOrdersPage() {
     try {
       const result = await createBatchFromSelection(session, selectedUnprintedIds);
       setPrintResult(result);
-      setSelected(new Set());
+      setSelectedOrders(new Map());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Gagal membuat batch");
     } finally {
@@ -1029,20 +1027,49 @@ function NewOrdersPage() {
   }
 
   async function packSelected() {
-    const ids = [...selected];
+    const ids = [...selectedOrders.keys()];
     if (ids.length === 0 || packing) return;
     setPacking(true);
     setError(null);
     try {
       const result = await packOrders(ids);
       setPackResult(result);
-      setSelected(new Set());
+      setSelectedOrders(new Map());
       // The server refreshes order states in the background; catch up soon.
       setTimeout(() => void load(true), 6000);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Gagal pack order");
     } finally {
       setPacking(false);
+    }
+  }
+
+  // --- Print resi (shipping labels) via BigSeller, grouped per marketplace
+  // --- + carrier (BigSeller only bulk-prints within one carrier).
+  const [resiOpen, setResiOpen] = useState(false);
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+
+  const resiGroups = useMemo(() => {
+    const m = new Map<string, { platform: string; carrier: string; ids: string[] }>();
+    for (const o of selectedOrders.values()) {
+      const carrier = o.carrier?.trim() || "Lainnya";
+      const key = `${o.platform}|${carrier}`;
+      const g = m.get(key) ?? { platform: o.platform, carrier, ids: [] };
+      g.ids.push(o.platformOrderId);
+      m.set(key, g);
+    }
+    return [...m.values()].sort((a, b) => b.ids.length - a.ids.length);
+  }, [selectedOrders]);
+
+  async function copyGroup(g: { platform: string; carrier: string; ids: string[] }) {
+    const key = `${g.platform}|${g.carrier}`;
+    const text = g.ids.join(" ");
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedKey(key);
+      setTimeout(() => setCopiedKey((c) => (c === key ? null : c)), 2000);
+    } catch {
+      window.prompt("Salin manual:", text);
     }
   }
 
@@ -1059,8 +1086,8 @@ function NewOrdersPage() {
     ),
     cell: ({ row }) => (
       <Checkbox
-        checked={selected.has(row.original.orderId)}
-        onCheckedChange={() => toggleOrder(row.original.orderId)}
+        checked={selectedOrders.has(row.original.orderId)}
+        onCheckedChange={() => toggleOrder(row.original.order)}
         aria-label={`Pilih ${row.original.order.platformOrderId}`}
       />
     ),
@@ -1069,7 +1096,7 @@ function NewOrdersPage() {
 
   const table = useReactTable({
     data: feedRows,
-    columns: actionable ? [selectColumn, ...feedColumns] : feedColumns,
+    columns: selectable ? [selectColumn, ...feedColumns] : feedColumns,
     getCoreRowModel: getCoreRowModel(),
   });
 
@@ -1121,7 +1148,7 @@ function NewOrdersPage() {
               onClick={() => {
                 setStatusTab(t.id);
                 setPage(0);
-                setSelected(new Set());
+                setSelectedOrders(new Map());
               }}
               className={cn(
                 "inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium transition-all duration-150 active:scale-[0.97]",
@@ -1269,7 +1296,7 @@ function NewOrdersPage() {
               {visibleRows.length === 0 ? (
                 <TableRow>
                   <TableCell
-                    colSpan={actionable ? 8 : 7}
+                    colSpan={selectable ? 8 : 7}
                     className="h-28 text-center whitespace-normal"
                   >
                     <p className="text-sm">Tidak ada order di halaman ini.</p>
@@ -1358,80 +1385,102 @@ function NewOrdersPage() {
         </>
       )}
 
-      {actionable && selected.size > 0 && (
+      {selectable && selectedOrders.size > 0 && (
         <div className="pointer-events-none fixed inset-x-0 bottom-4 z-50 flex justify-center px-4">
           <div className="pointer-events-auto flex flex-wrap items-center gap-2 rounded-2xl border bg-popover/95 py-2 pe-2 ps-4 shadow-xl backdrop-blur animate-bar-in">
             <div className="flex flex-col">
               <span className="text-sm font-semibold leading-tight tabular-nums">
-                {selected.size} order dipilih
+                {selectedOrders.size} order dipilih
               </span>
-              {pageUnprintedCount > selectedUnprintedIds.length ? (
-                <button
-                  type="button"
-                  onClick={selectAllUnprinted}
-                  className="cursor-pointer text-start text-[11px] text-info-foreground hover:underline"
-                >
-                  pilih semua {pageUnprintedCount} yang belum cetak (halaman
-                  ini)
-                </button>
+              {statusTab === "new" ? (
+                pageUnprintedCount > selectedUnprintedIds.length ? (
+                  <button
+                    type="button"
+                    onClick={selectAllUnprinted}
+                    className="cursor-pointer text-start text-[11px] text-info-foreground hover:underline"
+                  >
+                    pilih semua {pageUnprintedCount} yang belum cetak (halaman
+                    ini)
+                  </button>
+                ) : (
+                  <span className="text-[11px] leading-tight text-muted-foreground">
+                    Summary List PDF · klaim sekali, anti double print
+                  </span>
+                )
               ) : (
                 <span className="text-[11px] leading-tight text-muted-foreground">
-                  Summary List PDF · klaim sekali, anti double print
+                  Print resi dikelompokkan per marketplace + ekspedisi
                 </span>
               )}
             </div>
             <div className="mx-1 h-8 w-px bg-border" />
-            <Button
-              size="sm"
-              loading={packing}
-              disabled={packing || printing !== null}
-              onClick={() => void packSelected()}
-              title="Pack order di BigSeller (pindah ke In Process)"
-            >
-              <PackageCheck className="size-3.5" /> Pack
-            </Button>
-            <Button
-              size="sm"
-              variant="secondary"
-              loading={printing === "morning"}
-              disabled={printing !== null || packing || selectedUnprintedIds.length === 0}
-              onClick={() => void printSelected("morning")}
-              title={
-                selectedUnprintedIds.length === 0
-                  ? "Hanya order yang belum dicetak yang bisa di-print"
-                  : "Klaim + Summary List PDF"
-              }
-            >
-              <Printer className="size-3.5" /> Print pagi
-            </Button>
-            <Button
-              size="sm"
-              variant="secondary"
-              loading={printing === "afternoon"}
-              disabled={printing !== null || packing || selectedUnprintedIds.length === 0}
-              onClick={() => void printSelected("afternoon")}
-              title={
-                selectedUnprintedIds.length === 0
-                  ? "Hanya order yang belum dicetak yang bisa di-print"
-                  : "Klaim + Summary List PDF"
-              }
-            >
-              <Printer className="size-3.5" /> Print siang
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              loading={printing === "urgent"}
-              disabled={printing !== null || packing || selectedUnprintedIds.length === 0}
-              onClick={() => void printSelected("urgent")}
-            >
-              <Zap className="size-3.5" /> Urgent
-            </Button>
+            {statusTab === "new" ? (
+              <>
+                <Button
+                  size="sm"
+                  loading={packing}
+                  disabled={packing || printing !== null}
+                  onClick={() => void packSelected()}
+                  title="Pack order di BigSeller (pindah ke In Process)"
+                >
+                  <PackageCheck className="size-3.5" /> Pack
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  loading={printing === "morning"}
+                  disabled={printing !== null || packing || selectedUnprintedIds.length === 0}
+                  onClick={() => void printSelected("morning")}
+                  title={
+                    selectedUnprintedIds.length === 0
+                      ? "Hanya order yang belum dicetak yang bisa di-print"
+                      : "Klaim + Summary List PDF"
+                  }
+                >
+                  <Printer className="size-3.5" /> Print pagi
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  loading={printing === "afternoon"}
+                  disabled={printing !== null || packing || selectedUnprintedIds.length === 0}
+                  onClick={() => void printSelected("afternoon")}
+                  title={
+                    selectedUnprintedIds.length === 0
+                      ? "Hanya order yang belum dicetak yang bisa di-print"
+                      : "Klaim + Summary List PDF"
+                  }
+                >
+                  <Printer className="size-3.5" /> Print siang
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  loading={printing === "urgent"}
+                  disabled={printing !== null || packing || selectedUnprintedIds.length === 0}
+                  onClick={() => void printSelected("urgent")}
+                >
+                  <Zap className="size-3.5" /> Urgent
+                </Button>
+              </>
+            ) : (
+              <Button
+                size="sm"
+                onClick={() => {
+                  setCopiedKey(null);
+                  setResiOpen(true);
+                }}
+                title="Kelompokkan per marketplace + ekspedisi untuk bulk print di BigSeller"
+              >
+                <Printer className="size-3.5" /> Print resi (
+                {selectedOrders.size})
+              </Button>
+            )}
             <Button
               size="sm"
               variant="ghost"
               disabled={printing !== null || packing}
-              onClick={() => setSelected(new Set())}
+              onClick={() => setSelectedOrders(new Map())}
               aria-label="Batal pilih"
             >
               <X className="size-3.5" />
@@ -1519,6 +1568,71 @@ function NewOrdersPage() {
           </DialogHeader>
           <DialogFooter>
             <DialogClose render={<Button />}>Tutup</DialogClose>
+          </DialogFooter>
+        </DialogPopup>
+      </Dialog>
+
+      <Dialog
+        open={resiOpen}
+        onOpenChange={(open) => {
+          if (!open) setResiOpen(false);
+        }}
+      >
+        <DialogPopup>
+          <DialogHeader>
+            <DialogTitle>
+              Print resi — {selectedOrders.size} order · {resiGroups.length}{" "}
+              grup
+            </DialogTitle>
+            <DialogDescription>
+              BigSeller hanya bisa bulk print per marketplace + ekspedisi.
+              Salin nomor per grup, paste di kotak pencarian BigSeller, pilih
+              semua, lalu Bulk Print — plugin cetak jalan seperti biasa.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-2">
+            {resiGroups.map((g) => {
+              const key = `${g.platform}|${g.carrier}`;
+              return (
+                <div
+                  key={key}
+                  className="flex items-center justify-between gap-3 rounded-lg border px-3 py-2"
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge
+                      className={cn("capitalize", platformBadgeClass(g.platform))}
+                    >
+                      {g.platform}
+                    </Badge>
+                    <span className="text-sm">{g.carrier}</span>
+                    <span className="text-muted-foreground text-xs tabular-nums">
+                      {g.ids.length} order
+                    </span>
+                  </div>
+                  <Button
+                    size="xs"
+                    variant={copiedKey === key ? "secondary" : "outline"}
+                    onClick={() => void copyGroup(g)}
+                  >
+                    {copiedKey === key ? "Tersalin ✓" : "Salin nomor"}
+                  </Button>
+                </div>
+              );
+            })}
+          </div>
+          <DialogFooter>
+            <DialogClose render={<Button variant="outline" />}>Tutup</DialogClose>
+            <Button
+              render={
+                <a
+                  href="https://www.bigseller.com/web/order/index.htm?status=processing"
+                  target="_blank"
+                  rel="noreferrer"
+                />
+              }
+            >
+              Buka BigSeller
+            </Button>
           </DialogFooter>
         </DialogPopup>
       </Dialog>
