@@ -25,6 +25,12 @@ impl OrdersApi {
         self.http.snapshot_cookies()
     }
 
+    /// Form-urlencoded POST — the shape BigSeller's web actions use
+    /// (batchPack, batchInternalVerify, print checks).
+    pub async fn post_form(&self, path: &str, fields: &[(&str, String)]) -> Result<Value> {
+        self.http.post_form(path, fields).await
+    }
+
     /// Status counts for the order sidebar (new / packing / …).
     pub async fn status_counts(&self) -> Result<Value> {
         let body = json!({});

@@ -28,6 +28,7 @@ import {
   BadgeCheck,
   ChevronLeft,
   ChevronRight,
+  PackageCheck,
   Printer,
   Search,
   X,
@@ -49,6 +50,7 @@ import {
   formatWib,
   getToken,
   importCatalog,
+  packOrders,
   setToken,
   type BacklogOrder,
   type BacklogResponse,
@@ -60,6 +62,7 @@ import {
   type NewOrder,
   type NewOrderItem,
   type NewOrdersResponse,
+  type PackResult,
   type SelectionBatchResult,
 } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
@@ -939,6 +942,8 @@ function NewOrdersPage() {
   const [printResult, setPrintResult] = useState<SelectionBatchResult | null>(
     null,
   );
+  const [packing, setPacking] = useState(false);
+  const [packResult, setPackResult] = useState<PackResult | null>(null);
 
   const load = useCallback(async (silent: boolean) => {
     if (!silent) setLoading(true);
@@ -1058,24 +1063,54 @@ function NewOrdersPage() {
     );
   }
 
-  const unprintedSelection = useMemo(() => {
-    let total = 0;
-    let chosen = 0;
+  /** Distinct order ids currently visible (after filters). */
+  const pageOrderIds = useMemo(() => {
+    const ids: number[] = [];
+    const seen = new Set<number>();
     for (const r of feedRows) {
-      if (r.order.summaryPrinted) continue;
-      total++;
-      if (selected.has(r.orderId)) chosen++;
+      if (!seen.has(r.orderId)) {
+        seen.add(r.orderId);
+        ids.push(r.orderId);
+      }
     }
-    return { total, chosen };
-  }, [feedRows, selected]);
+    return ids;
+  }, [feedRows]);
+
+  const pageAllSelected =
+    pageOrderIds.length > 0 && pageOrderIds.every((id) => selected.has(id));
+  const pageSomeSelected = pageOrderIds.some((id) => selected.has(id));
+
+  function togglePageOrders() {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (pageAllSelected) for (const id of pageOrderIds) next.delete(id);
+      else for (const id of pageOrderIds) next.add(id);
+      return next;
+    });
+  }
+
+  const ordersById = useMemo(
+    () => new Map(orders.map((o) => [o.orderId, o])),
+    [orders],
+  );
+
+  /** Selected orders that are not printed yet — only these can be claimed
+   *  into a print batch. Pack, on the other hand, accepts the full selection. */
+  const selectedUnprintedIds = useMemo(
+    () =>
+      [...selected].filter((id) => {
+        const o = ordersById.get(id);
+        return o ? !o.summaryPrinted : false;
+      }),
+    [selected, ordersById],
+  );
 
   async function printSelected(session: BatchSession) {
-    const ids = [...selected];
-    if (ids.length === 0 || printing) return;
+    if (selectedUnprintedIds.length === 0 || printing) return;
     setPrinting(session);
     setError(null);
     try {
-      const result = await createBatchFromSelection(session, ids);
+      const result = await createBatchFromSelection(session, selectedUnprintedIds);
       setPrintResult(result);
       setSelected(new Set());
     } catch (err) {
@@ -1085,45 +1120,42 @@ function NewOrdersPage() {
     }
   }
 
+  async function packSelected() {
+    const ids = [...selected];
+    if (ids.length === 0 || packing) return;
+    setPacking(true);
+    setError(null);
+    try {
+      const result = await packOrders(ids);
+      setPackResult(result);
+      setSelected(new Set());
+      // The server refreshes order states in the background; catch up soon.
+      setTimeout(() => void load(true), 6000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Gagal pack order");
+    } finally {
+      setPacking(false);
+    }
+  }
+
   const selectColumn: ColumnDef<FeedRow> = {
     id: "select",
     header: () => (
       <Checkbox
-        checked={
-          unprintedSelection.total > 0 &&
-          unprintedSelection.chosen === unprintedSelection.total
-        }
-        indeterminate={
-          unprintedSelection.chosen > 0 &&
-          unprintedSelection.chosen < unprintedSelection.total
-        }
-        disabled={unprintedSelection.total === 0}
-        onCheckedChange={() => {
-          if (
-            unprintedSelection.total > 0 &&
-            unprintedSelection.chosen === unprintedSelection.total
-          ) {
-            setSelected(new Set());
-          } else {
-            selectAllUnprinted();
-          }
-        }}
-        aria-label="Pilih semua order yang belum dicetak"
+        checked={pageAllSelected}
+        indeterminate={!pageAllSelected && pageSomeSelected}
+        disabled={pageOrderIds.length === 0}
+        onCheckedChange={() => togglePageOrders()}
+        aria-label="Pilih semua order di halaman ini"
       />
     ),
-    cell: ({ row }) => {
-      const o = row.original.order;
-      if (o.summaryPrinted) {
-        return <span className="block size-4" aria-hidden />;
-      }
-      return (
-        <Checkbox
-          checked={selected.has(o.orderId)}
-          onCheckedChange={() => toggleOrder(o.orderId)}
-          aria-label={`Pilih ${o.platformOrderId}`}
-        />
-      );
-    },
+    cell: ({ row }) => (
+      <Checkbox
+        checked={selected.has(row.original.orderId)}
+        onCheckedChange={() => toggleOrder(row.original.orderId)}
+        aria-label={`Pilih ${row.original.order.platformOrderId}`}
+      />
+    ),
     enableSorting: false,
   };
 
@@ -1536,9 +1568,24 @@ function NewOrdersPage() {
             <div className="mx-1 h-8 w-px bg-border" />
             <Button
               size="sm"
+              loading={packing}
+              disabled={packing || printing !== null}
+              onClick={() => void packSelected()}
+              title="Pack order di BigSeller (pindah ke In Process)"
+            >
+              <PackageCheck className="size-3.5" /> Pack
+            </Button>
+            <Button
+              size="sm"
+              variant="secondary"
               loading={printing === "morning"}
-              disabled={printing !== null}
+              disabled={printing !== null || packing || selectedUnprintedIds.length === 0}
               onClick={() => void printSelected("morning")}
+              title={
+                selectedUnprintedIds.length === 0
+                  ? "Hanya order yang belum dicetak yang bisa di-print"
+                  : "Klaim + Summary List PDF"
+              }
             >
               <Printer className="size-3.5" /> Print pagi
             </Button>
@@ -1546,8 +1593,13 @@ function NewOrdersPage() {
               size="sm"
               variant="secondary"
               loading={printing === "afternoon"}
-              disabled={printing !== null}
+              disabled={printing !== null || packing || selectedUnprintedIds.length === 0}
               onClick={() => void printSelected("afternoon")}
+              title={
+                selectedUnprintedIds.length === 0
+                  ? "Hanya order yang belum dicetak yang bisa di-print"
+                  : "Klaim + Summary List PDF"
+              }
             >
               <Printer className="size-3.5" /> Print siang
             </Button>
@@ -1555,7 +1607,7 @@ function NewOrdersPage() {
               size="sm"
               variant="outline"
               loading={printing === "urgent"}
-              disabled={printing !== null}
+              disabled={printing !== null || packing || selectedUnprintedIds.length === 0}
               onClick={() => void printSelected("urgent")}
             >
               <Zap className="size-3.5" /> Urgent
@@ -1563,7 +1615,7 @@ function NewOrdersPage() {
             <Button
               size="sm"
               variant="ghost"
-              disabled={printing !== null}
+              disabled={printing !== null || packing}
               onClick={() => setSelected(new Set())}
               aria-label="Batal pilih"
             >
@@ -1622,6 +1674,36 @@ function NewOrdersPage() {
             <Button render={<Link to={`/batches/${printResult?.id ?? ""}`} />}>
               Buka batch + PDF
             </Button>
+          </DialogFooter>
+        </DialogPopup>
+      </Dialog>
+
+      <Dialog
+        open={packResult !== null}
+        onOpenChange={(open) => {
+          if (!open && !packing) {
+            setPackResult(null);
+            void load(true);
+          }
+        }}
+      >
+        <DialogPopup>
+          <DialogHeader>
+            <DialogTitle>
+              {packResult?.ok ? "Order di-pack" : "Pack gagal"}
+            </DialogTitle>
+            <DialogDescription>
+              {packResult
+                ? `${packResult.packed.length} order dikirim ke BigSeller untuk di-pack${
+                    packResult.skipped.length > 0
+                      ? ` · ${packResult.skipped.length} dilewati (sudah pindah status)`
+                      : ""
+                  }. Order akan hilang dari daftar dalam beberapa detik.`
+                : ""}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <DialogClose render={<Button />}>Tutup</DialogClose>
           </DialogFooter>
         </DialogPopup>
       </Dialog>

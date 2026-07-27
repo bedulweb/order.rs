@@ -45,6 +45,10 @@ pub struct ApiState {
     pub api_token: Option<String>,
     /// Optional Vite `web/dist` (or deploy root). When set, SPA is served on `/`.
     pub web_dist: Option<PathBuf>,
+    /// BigSeller base URL + saved session path (kept fresh by the worker) —
+    /// used for user-initiated actions like Pack.
+    pub base_url: String,
+    pub session_path: PathBuf,
 }
 
 pub fn router(state: ApiState) -> Router {
@@ -58,6 +62,7 @@ pub fn router(state: ApiState) -> Router {
         )
         .route("/v1/orders/events", get(events))
         .route("/v1/orders/new", get(orders_new))
+        .route("/v1/orders/pack", post(orders_pack))
         .route("/v1/reports/in-cancel/daily", get(cancel_report))
         // Ops batches (pick lists)
         .route("/v1/batches/backlog", get(batches_backlog))
@@ -578,6 +583,40 @@ async fn orders_new(
     Ok(Json(resp))
 }
 
+/// POST `/v1/orders/pack` `{ "orderIds": [..] }` — verify + pack the selected
+/// orders in BigSeller, then refresh their state in the background.
+async fn orders_pack(
+    State(st): State<ApiState>,
+    headers: HeaderMap,
+    Json(body): Json<PackOrdersBody>,
+) -> std::result::Result<Json<crate::pack::PackResult>, ApiError> {
+    check_auth(&st, &headers)?;
+    if body.order_ids.is_empty() {
+        return Err(ApiError::BadRequest("orderIds required".into()));
+    }
+    if body.order_ids.len() > 200 {
+        return Err(ApiError::BadRequest("max 200 orders per pack".into()));
+    }
+    let account_id = resolve_account_id(&st.pool, body.account.as_deref()).await?;
+    let result = crate::pack::pack_orders(
+        &st.pool,
+        &st.base_url,
+        &st.session_path,
+        account_id,
+        &body.order_ids,
+    )
+    .await
+    .map_err(ApiError::from)?;
+    Ok(Json(result))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PackOrdersBody {
+    order_ids: Vec<i64>,
+    account: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // Ops batches
 // ---------------------------------------------------------------------------
@@ -968,6 +1007,7 @@ mod tests {
         let src = include_str!("api.rs");
         for path in [
             "/v1/orders/new",
+            "/v1/orders/pack",
             "/v1/batches/backlog",
             "/v1/batches",
             "/v1/batches/from-selection",

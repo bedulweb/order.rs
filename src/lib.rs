@@ -31,6 +31,7 @@ pub mod map;
 pub mod notify;
 pub mod ocr;
 pub mod orders;
+pub mod pack;
 pub mod product_names;
 pub mod screen_ocr;
 pub mod session;

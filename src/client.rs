@@ -122,6 +122,20 @@ impl HttpClient {
             .await?;
         parse_envelope(resp).await
     }
+
+    /// POST `application/x-www-form-urlencoded` — the shape BigSeller's web
+    /// actions use (batchPack, batchInternalVerify, print checks, …).
+    pub async fn post_form(&self, path: &str, fields: &[(&str, String)]) -> Result<Value> {
+        let resp = self
+            .inner
+            .post(self.url(path))
+            .header("Referer", format!("{}/web/order/index.htm", self.base_url))
+            .header("Origin", &self.base_url)
+            .form(fields)
+            .send()
+            .await?;
+        parse_envelope(resp).await
+    }
 }
 
 fn origin_url(base_url: &str) -> Result<Url> {

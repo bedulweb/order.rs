@@ -395,6 +395,8 @@ async fn main() -> anyhow::Result<()> {
                 pool,
                 api_token: cfg.api_token.clone(),
                 web_dist: cfg.web_dist.clone(),
+                base_url: cfg.base_url.clone(),
+                session_path: cfg.session_path.clone(),
             };
             api::serve(state, addr).await?;
         }

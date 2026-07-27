@@ -23,7 +23,7 @@ ocrs = "0.12"
 ort = "2.0.0-rc.12"
 rand = "0.8"
 resvg = "0.45"
-reqwest = { version = "0.13", default-features = false, features = ["json", "cookies", "rustls", "blocking", "multipart"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "cookies", "rustls", "blocking", "multipart", "form"] }
 reqwest_cookie_store = "0.10.0"
 rten = "0.24"
 rust_decimal = { version = "1.42.1", features = ["serde-with-str"] }

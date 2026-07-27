@@ -211,6 +211,24 @@ export function createBatchFromSelection(
   });
 }
 
+export type PackResult = {
+  requested: number;
+  /** Orders BigSeller accepted for packing. */
+  packed: number[];
+  /** Requested but no longer packable (already moved/packed). */
+  skipped: number[];
+  ok: boolean;
+  message: string;
+};
+
+/** Pack orders in BigSeller (mirror of the web "Pack" button). */
+export function packOrders(orderIds: number[]): Promise<PackResult> {
+  return request("/v1/orders/pack", {
+    method: "POST",
+    body: JSON.stringify({ orderIds }),
+  });
+}
+
 export function fetchBatch(id: string): Promise<BatchDetail> {
   return request(`/v1/batches/${id}`);
 }

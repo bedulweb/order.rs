@@ -398,7 +398,9 @@ pub struct ReconcileStats {
     pub candidates: i32,
     /// Found in BigSeller and state actually changed (healed).
     pub refreshed: i32,
-    /// Not found in any BigSeller search (left as-is, retried later).
+    /// Not found anywhere and older than 30 days → moved to `archived`.
+    pub archived: i32,
+    /// Not found but recent — left for a retry next cycle.
     pub not_found: i32,
 }
 
@@ -456,8 +458,9 @@ pub async fn reconcile_stale_new_orders(
     let result = async {
         for row in rows {
             let pid: String = row.get("platform_order_id");
-            // Gentle pacing — BigSeller rate-limits search bursts.
-            tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+            // Gentle pacing — BigSeller throttles search bursts
+            // ("too frequent") which returns empty results.
+            tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
             let q = OrderListQuery::search_order_no(&pid);
             let page = match api.page_list(&q).await {
                 Ok(p) => p,
@@ -496,7 +499,28 @@ pub async fn reconcile_stale_new_orders(
             }
             if !found {
                 stats.not_found += 1;
-                warn!(order_no = %pid, "reconcile: order not found in BigSeller search");
+                // Orders older than 30 days that BigSeller's search no longer
+                // indexes will never be found — archive them instead of
+                // retrying every cycle (recent misses stay for retry).
+                let archived = sqlx::query(
+                    r#"
+                    UPDATE orders
+                    SET state = 'archived', updated_at = now()
+                    WHERE platform_order_id = $1
+                      AND state = 'new'
+                      AND ordered_at < now() - interval '30 days'
+                    "#,
+                )
+                .bind(&pid)
+                .execute(pool)
+                .await?;
+                if archived.rows_affected() > 0 {
+                    stats.archived += 1;
+                    stats.not_found -= 1;
+                    info!(order_no = %pid, "archived unfindable old order");
+                } else {
+                    warn!(order_no = %pid, "reconcile: order not found in BigSeller search");
+                }
             }
         }
         Ok::<_, Error>(())
@@ -515,6 +539,7 @@ pub async fn reconcile_stale_new_orders(
                 json!({
                     "candidates": stats.candidates,
                     "refreshed": stats.refreshed,
+                    "archived": stats.archived,
                     "notFound": stats.not_found,
                 }),
             )
@@ -870,6 +895,7 @@ pub async fn run_worker(pool: PgPool, cfg: Config, app_cfg: WorkerConfig) -> Res
                         info!(
                             candidates = r.candidates,
                             refreshed = r.refreshed,
+                            archived = r.archived,
                             not_found = r.not_found,
                             "reconciled stale new orders"
                         );
