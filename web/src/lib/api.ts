@@ -169,13 +169,35 @@ export type NewOrder = {
   items: NewOrderItem[];
 };
 
-export type NewOrdersResponse = {
+export type FeedStatus = "new" | "processing" | "shipped" | "completed" | "all";
+
+export type FeedCounts = {
+  new: number;
+  processing: number;
+  shipped: number;
+  completed: number;
+  all: number;
+};
+
+export type OrdersFeedResponse = {
   total: number;
+  counts: FeedCounts;
   orders: NewOrder[];
 };
 
-export function fetchNewOrders(limit = 500): Promise<NewOrdersResponse> {
-  return request(`/v1/orders/new?limit=${limit}`);
+/** Orders feed mirroring BigSeller's status tabs, server-paginated. */
+export function fetchOrdersFeed(opts: {
+  status: FeedStatus;
+  q?: string;
+  limit?: number;
+  offset?: number;
+}): Promise<OrdersFeedResponse> {
+  const params = new URLSearchParams();
+  params.set("status", opts.status);
+  if (opts.q?.trim()) params.set("q", opts.q.trim());
+  params.set("limit", String(opts.limit ?? 50));
+  params.set("offset", String(opts.offset ?? 0));
+  return request(`/v1/orders/new?${params.toString()}`);
 }
 
 export function fetchBatchesToday(date?: string): Promise<BatchesListResponse> {

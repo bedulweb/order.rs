@@ -678,10 +678,57 @@ pub struct NewOrderDto {
     pub items: Vec<NewOrderItemDto>,
 }
 
+/// Feed tabs mirroring BigSeller's order views.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FeedStatus {
+    New,
+    Processing,
+    Shipped,
+    Completed,
+    All,
+}
+
+impl FeedStatus {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "" | "new" => Some(Self::New),
+            "processing" | "process" => Some(Self::Processing),
+            "shipped" => Some(Self::Shipped),
+            "completed" => Some(Self::Completed),
+            "all" => Some(Self::All),
+            _ => None,
+        }
+    }
+
+    fn state_clause(self) -> &'static str {
+        match self {
+            Self::New => "o.state = 'new'",
+            Self::Processing => "o.state IN ('processing', 'pickup', 'platformProcessing')",
+            Self::Shipped => "o.state = 'shipped'",
+            Self::Completed => "o.state = 'completed'",
+            // Everything except our internal archived (vanished) state.
+            Self::All => "o.state <> 'archived'",
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct NewOrdersResponse {
+pub struct FeedCounts {
+    pub new: i64,
+    pub processing: i64,
+    pub shipped: i64,
+    pub completed: i64,
+    pub all: i64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrdersFeedResponse {
+    /// Total rows matching the current status + search (for pagination).
     pub total: i64,
+    /// Per-tab counts (account-scoped, ignoring status/search).
+    pub counts: FeedCounts,
     pub orders: Vec<NewOrderDto>,
 }
 
@@ -693,16 +740,34 @@ pub struct NewOrdersResponse {
 /// Matches the count shown by BigSeller's own "New Orders" page.
 const NEW_FEED_WINDOW: &str = "15 minutes";
 
-/// Incoming-orders feed for the ops table: orders currently in BigSeller's
-/// "New Orders" bucket (`state = 'new'` with a fresh `synced_at`), newest
-/// first, with line items (thumbnail, title, variant, price) in one batch.
-pub async fn list_new_orders(
+/// Orders feed mirroring BigSeller's status tabs (new / processing / shipped
+/// / completed / all), newest first, server-paginated, with optional search
+/// on order number / buyer. The `new` tab keeps the freshness window so it
+/// matches BigSeller's live New Orders list; other tabs are plain state.
+pub async fn list_orders_feed(
     pool: &PgPool,
     account_id: Option<i64>,
+    status: FeedStatus,
+    q: Option<&str>,
     limit: i64,
-) -> Result<NewOrdersResponse> {
-    let limit = limit.clamp(1, 2000);
-    let rows = sqlx::query(
+    offset: i64,
+) -> Result<OrdersFeedResponse> {
+    let limit = limit.clamp(1, 200);
+    let offset = offset.max(0);
+    let q_pattern = q
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| format!("%{s}%"));
+    // Only the `new` tab applies the freshness window; NULL disables it.
+    let fresh_window: Option<&str> = if status == FeedStatus::New {
+        Some(NEW_FEED_WINDOW)
+    } else {
+        None
+    };
+
+    let state_clause = status.state_clause();
+
+    let select_sql = format!(
         r#"
         SELECT
             o.id, o.platform_order_id, o.platform, s.name AS shop_name,
@@ -726,18 +791,27 @@ pub async fn list_new_orders(
             ) AS batch_session
         FROM orders o
         LEFT JOIN shops s ON s.id = o.shop_id
-        WHERE o.state = 'new'
-          AND o.synced_at > now() - $3::interval
+        WHERE {state_clause}
+          AND (o.synced_at > now() - $4::interval OR $4::interval IS NULL)
+          AND (
+              $5::text IS NULL
+              OR o.platform_order_id ILIKE $5
+              OR o.buyer_username ILIKE $5
+              OR o.contact_person ILIKE $5
+          )
           AND ($1::bigint IS NULL OR o.account_id = $1)
         ORDER BY o.ordered_at DESC NULLS LAST, o.id DESC
-        LIMIT $2
-        "#,
-    )
-    .bind(account_id)
-    .bind(limit)
-    .bind(NEW_FEED_WINDOW)
-    .fetch_all(pool)
-    .await?;
+        LIMIT $2 OFFSET $3
+        "#
+    );
+    let rows = sqlx::query(&select_sql)
+        .bind(account_id)
+        .bind(limit)
+        .bind(offset)
+        .bind(fresh_window)
+        .bind(q_pattern.clone())
+        .fetch_all(pool)
+        .await?;
 
     let order_ids: Vec<i64> = rows.iter().map(|r| r.get("id")).collect();
     let items_map = load_new_order_items(pool, &order_ids).await?;
@@ -774,13 +848,44 @@ pub async fn list_new_orders(
         });
     }
 
-    let total: i64 = sqlx::query_scalar(
+    let count_sql = format!(
         r#"
         SELECT COUNT(*)::bigint
+        FROM orders o
+        WHERE {state_clause}
+          AND (o.synced_at > now() - $4::interval OR $4::interval IS NULL)
+          AND (
+              $5::text IS NULL
+              OR o.platform_order_id ILIKE $5
+              OR o.buyer_username ILIKE $5
+              OR o.contact_person ILIKE $5
+          )
+          AND ($1::bigint IS NULL OR o.account_id = $1)
+        "#
+    );
+    let total: i64 = sqlx::query_scalar(&count_sql)
+        .bind(account_id)
+        .bind(limit) // $2 unused in count; keeps positional binds aligned
+        .bind(offset) // $3 unused in count
+        .bind(fresh_window)
+        .bind(q_pattern)
+        .fetch_one(pool)
+        .await?;
+
+    let counts_row = sqlx::query(
+        r#"
+        SELECT
+            COUNT(*) FILTER (
+                WHERE state = 'new' AND synced_at > now() - $2::interval
+            )::bigint AS "new",
+            COUNT(*) FILTER (
+                WHERE state IN ('processing', 'pickup', 'platformProcessing')
+            )::bigint AS "processing",
+            COUNT(*) FILTER (WHERE state = 'shipped')::bigint AS "shipped",
+            COUNT(*) FILTER (WHERE state = 'completed')::bigint AS "completed",
+            COUNT(*) FILTER (WHERE state <> 'archived')::bigint AS "all"
         FROM orders
-        WHERE state = 'new'
-          AND synced_at > now() - $2::interval
-          AND ($1::bigint IS NULL OR account_id = $1)
+        WHERE ($1::bigint IS NULL OR account_id = $1)
         "#,
     )
     .bind(account_id)
@@ -788,7 +893,17 @@ pub async fn list_new_orders(
     .fetch_one(pool)
     .await?;
 
-    Ok(NewOrdersResponse { total, orders })
+    Ok(OrdersFeedResponse {
+        total,
+        counts: FeedCounts {
+            new: counts_row.get("new"),
+            processing: counts_row.get("processing"),
+            shipped: counts_row.get("shipped"),
+            completed: counts_row.get("completed"),
+            all: counts_row.get("all"),
+        },
+        orders,
+    })
 }
 
 async fn load_new_order_items(

@@ -10,8 +10,8 @@ use crate::batch::{self, BatchSession};
 use crate::catalog;
 use crate::screen_ocr::{self, OrderIdHit};
 use crate::store::{
-    cancel_daily_report, find_by_platform_order_id, list_events_since, list_new_orders,
-    CancelDailyReport, NewOrdersResponse, OrderDetailDto, OutboxEvent,
+    cancel_daily_report, find_by_platform_order_id, list_events_since, list_orders_feed,
+    CancelDailyReport, FeedStatus, OrderDetailDto, OrdersFeedResponse, OutboxEvent,
 };
 use axum::extract::{DefaultBodyLimit, FromRequest, Multipart, Path, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
@@ -566,20 +566,41 @@ async fn cancel_report(
 struct NewOrdersQuery {
     account: Option<String>,
     limit: Option<i64>,
+    /// Status tab: new (default) | processing | shipped | completed | all.
+    status: Option<String>,
+    /// Search on platform order id / buyer.
+    q: Option<String>,
+    offset: Option<i64>,
 }
 
-/// GET `/v1/orders/new?limit=&account=` — all `state=new` orders with line
-/// items (image, title, variant, price) for the ops incoming-orders table.
+/// GET `/v1/orders/new?status=&q=&limit=&offset=` — orders feed mirroring
+/// BigSeller's status tabs (new/processing/shipped/completed/all), newest
+/// first, server-paginated, with line items for the ops table.
 async fn orders_new(
     State(st): State<ApiState>,
     headers: HeaderMap,
     Query(q): Query<NewOrdersQuery>,
-) -> std::result::Result<Json<NewOrdersResponse>, ApiError> {
+) -> std::result::Result<Json<OrdersFeedResponse>, ApiError> {
     check_auth(&st, &headers)?;
     let account_id = resolve_account_id(&st.pool, q.account.as_deref()).await?;
-    let resp = list_new_orders(&st.pool, account_id, q.limit.unwrap_or(500))
-        .await
-        .map_err(ApiError::from)?;
+    let status = match FeedStatus::parse(q.status.as_deref().unwrap_or("new")) {
+        Some(s) => s,
+        None => {
+            return Err(ApiError::BadRequest(
+                "status must be new|processing|shipped|completed|all".into(),
+            ))
+        }
+    };
+    let resp = list_orders_feed(
+        &st.pool,
+        account_id,
+        status,
+        q.q.as_deref(),
+        q.limit.unwrap_or(50),
+        q.offset.unwrap_or(0),
+    )
+    .await
+    .map_err(ApiError::from)?;
     Ok(Json(resp))
 }
 

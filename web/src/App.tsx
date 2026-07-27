@@ -12,19 +12,10 @@ import {
 import {
   flexRender,
   getCoreRowModel,
-  getFilteredRowModel,
-  getPaginationRowModel,
-  getSortedRowModel,
   useReactTable,
-  type Column,
   type ColumnDef,
-  type PaginationState,
-  type SortingState,
 } from "@tanstack/react-table";
 import {
-  ArrowDown,
-  ArrowUp,
-  ArrowUpDown,
   BadgeCheck,
   ChevronLeft,
   ChevronRight,
@@ -45,7 +36,7 @@ import {
   fetchBatchesToday,
   regenerateBatchPdf,
   fetchCatalogProducts,
-  fetchNewOrders,
+  fetchOrdersFeed,
   formatIdr,
   formatWib,
   getToken,
@@ -59,9 +50,10 @@ import {
   type BatchSummary,
   type BatchesListResponse,
   type CatalogProduct,
+  type FeedStatus,
   type NewOrder,
   type NewOrderItem,
-  type NewOrdersResponse,
+  type OrdersFeedResponse,
   type PackResult,
   type SelectionBatchResult,
 } from "@/lib/api";
@@ -633,19 +625,6 @@ function Thumb({ src, alt }: { src: string | null; alt: string }) {
   );
 }
 
-function FeedStat({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex flex-col gap-0.5">
-      <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-        {label}
-      </span>
-      <span className="font-heading text-xl font-semibold tabular-nums leading-none">
-        {value}
-      </span>
-    </div>
-  );
-}
-
 function buyerName(o: NewOrder): string | null {
   return o.buyerUsername?.trim() || o.contactPerson?.trim() || null;
 }
@@ -674,63 +653,15 @@ const SESSION_LABEL: Record<BatchSession, string> = {
   urgent: "urgent",
 };
 
-function SortableHead({
-  column,
-  children,
-}: {
-  column: Column<FeedRow, unknown>;
-  children: React.ReactNode;
-}) {
-  const sorted = column.getIsSorted();
-  return (
-    <button
-      type="button"
-      onClick={() => column.toggleSorting(sorted === "asc")}
-      title={sorted ? "Klik lagi untuk reset urutan" : "Urutkan"}
-      className={cn(
-        "group -mx-1 inline-flex h-6 cursor-pointer items-center gap-1 rounded-md px-1 transition-colors hover:bg-accent/70 hover:text-foreground",
-        sorted && "text-foreground",
-      )}
-    >
-      {children}
-      {sorted === "asc" ? (
-        <ArrowUp className="size-3 shrink-0" />
-      ) : sorted === "desc" ? (
-        <ArrowDown className="size-3 shrink-0" />
-      ) : (
-        <ArrowUpDown className="size-3 shrink-0 opacity-0 transition-opacity group-hover:opacity-50" />
-      )}
-    </button>
-  );
-}
+const PAGE_SIZE = 50;
 
-function FilterChip({
-  active,
-  activeClass,
-  onClick,
-  children,
-}: {
-  active: boolean;
-  activeClass?: string;
-  onClick: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        "inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium capitalize transition-all duration-150 active:scale-[0.97]",
-        active
-          ? (activeClass ??
-              "border-primary bg-primary text-primary-foreground shadow-xs")
-          : "border-input bg-popover text-foreground hover:bg-accent/50",
-      )}
-    >
-      {children}
-    </button>
-  );
-}
+const FEED_TABS: { id: FeedStatus; label: string }[] = [
+  { id: "new", label: "Baru" },
+  { id: "processing", label: "Diproses" },
+  { id: "shipped", label: "Dikirim" },
+  { id: "completed", label: "Selesai" },
+  { id: "all", label: "Semua" },
+];
 
 const feedColumns: ColumnDef<FeedRow>[] = [
   {
@@ -775,8 +706,7 @@ const feedColumns: ColumnDef<FeedRow>[] = [
   },
   {
     id: "judul",
-    header: ({ column }) => <SortableHead column={column}>Judul</SortableHead>,
-    accessorFn: (r) => r.item?.itemName ?? r.item?.sku ?? "",
+    header: "Judul",
     cell: ({ row }) => {
       const it = row.original.item;
       if (!it) {
@@ -809,10 +739,7 @@ const feedColumns: ColumnDef<FeedRow>[] = [
   },
   {
     id: "varian",
-    header: ({ column }) => (
-      <SortableHead column={column}>Varian</SortableHead>
-    ),
-    accessorFn: (r) => r.item?.variantAttr ?? "",
+    header: "Varian",
     cell: ({ row }) => (
       <span className="text-muted-foreground text-sm">
         {row.original.item?.variantAttr?.trim() || "—"}
@@ -821,10 +748,7 @@ const feedColumns: ColumnDef<FeedRow>[] = [
   },
   {
     id: "harga",
-    header: ({ column }) => (
-      <SortableHead column={column}>Harga</SortableHead>
-    ),
-    accessorFn: (r) => parseMoney(r.item?.unitPrice) ?? 0,
+    header: "Harga",
     cell: ({ row }) => {
       const it = row.original.item;
       if (!it) return <span className="text-muted-foreground">—</span>;
@@ -844,10 +768,7 @@ const feedColumns: ColumnDef<FeedRow>[] = [
   },
   {
     id: "platform",
-    header: ({ column }) => (
-      <SortableHead column={column}>Platform</SortableHead>
-    ),
-    accessorFn: (r) => r.order.platform,
+    header: "Platform",
     cell: ({ row }) => {
       const o = row.original.order;
       return (
@@ -867,10 +788,7 @@ const feedColumns: ColumnDef<FeedRow>[] = [
   },
   {
     id: "buyer",
-    header: ({ column }) => (
-      <SortableHead column={column}>Nama Buyer</SortableHead>
-    ),
-    accessorFn: (r) => buyerName(r.order) ?? "",
+    header: "Nama Buyer",
     cell: ({ row }) => {
       const o = row.original.order;
       const qty = o.itemTotalNum ?? o.items.reduce((s, it) => s + it.quantity, 0);
@@ -886,10 +804,7 @@ const feedColumns: ColumnDef<FeedRow>[] = [
   },
   {
     id: "ekspedisi",
-    header: ({ column }) => (
-      <SortableHead column={column}>Ekspedisi</SortableHead>
-    ),
-    accessorFn: (r) => r.order.carrier ?? "",
+    header: "Ekspedisi",
     cell: ({ row }) => {
       const o = row.original.order;
       return (
@@ -904,19 +819,10 @@ const feedColumns: ColumnDef<FeedRow>[] = [
       );
     },
   },
-  {
-    // Hidden — extra search tokens (nomor pesanan, SKU, nama toko).
-    id: "meta",
-    accessorFn: (r) =>
-      [r.order.platformOrderId, r.item?.sku ?? "", r.order.shopName ?? ""].join(
-        " ",
-      ),
-    enableSorting: false,
-  },
 ];
 
 function NewOrdersPage() {
-  const [data, setData] = useState<NewOrdersResponse | null>(null);
+  const [data, setData] = useState<OrdersFeedResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -924,17 +830,6 @@ function NewOrdersPage() {
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [flashIds, setFlashIds] = useState<Set<number>>(new Set());
   const knownIds = useRef<Set<number> | null>(null);
-
-  const [sorting, setSorting] = useState<SortingState>([]);
-  const [globalFilter, setGlobalFilter] = useState("");
-  const [platformFilter, setPlatformFilter] = useState<string | null>(null);
-  const [urgentOnly, setUrgentOnly] = useState(false);
-  const [unprintedOnly, setUnprintedOnly] = useState(false);
-  const [pagination, setPagination] = useState<PaginationState>({
-    pageIndex: 0,
-    pageSize: 50,
-  });
-  const searchRef = useRef<HTMLInputElement>(null);
 
   // Bulk selection: order-level (rows are per item, many rows share an order).
   const [selected, setSelected] = useState<Set<number>>(new Set());
@@ -945,41 +840,64 @@ function NewOrdersPage() {
   const [packing, setPacking] = useState(false);
   const [packResult, setPackResult] = useState<PackResult | null>(null);
 
-  const load = useCallback(async (silent: boolean) => {
-    if (!silent) setLoading(true);
-    setRefreshing(true);
-    setError(null);
-    try {
-      const resp = await fetchNewOrders(500);
-      const ids = resp.orders.map((o) => o.orderId);
-      const prev = knownIds.current;
-      if (prev) {
-        setFlashIds(new Set(ids.filter((id) => !prev.has(id))));
-        knownIds.current = new Set([...prev, ...ids]);
-      } else {
-        setFlashIds(new Set());
-        knownIds.current = new Set(ids);
+  const [statusTab, setStatusTab] = useState<FeedStatus>("new");
+  const [page, setPage] = useState(0);
+  const [searchInput, setSearchInput] = useState("");
+  const [appliedQ, setAppliedQ] = useState("");
+  const searchRef = useRef<HTMLInputElement>(null);
+  const mounted = useRef(false);
+
+  // Debounce the search box into the server query.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setAppliedQ(searchInput.trim());
+      setPage(0);
+    }, 350);
+    return () => clearTimeout(t);
+  }, [searchInput]);
+
+  const load = useCallback(
+    async (silent: boolean) => {
+      if (!silent) setLoading(true);
+      setRefreshing(true);
+      setError(null);
+      try {
+        const resp = await fetchOrdersFeed({
+          status: statusTab,
+          q: appliedQ || undefined,
+          limit: PAGE_SIZE,
+          offset: page * PAGE_SIZE,
+        });
+        // Flash newly arrived orders (unfiltered new tab only).
+        if (statusTab === "new" && appliedQ === "" && page === 0) {
+          const ids = resp.orders.map((o) => o.orderId);
+          const prev = knownIds.current;
+          if (prev) {
+            setFlashIds(new Set(ids.filter((id) => !prev.has(id))));
+            knownIds.current = new Set([...prev, ...ids]);
+          } else {
+            setFlashIds(new Set());
+            knownIds.current = new Set(ids);
+          }
+        } else {
+          setFlashIds(new Set());
+        }
+        setData(resp);
+        setLastUpdated(new Date());
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to load");
+      } finally {
+        setLoading(false);
+        setRefreshing(false);
       }
-      setData(resp);
-      setLastUpdated(new Date());
-      // Drop selections that are no longer claimable (printed / gone).
-      const eligible = new Set(
-        resp.orders.filter((o) => !o.summaryPrinted).map((o) => o.orderId),
-      );
-      setSelected((prev) => {
-        const next = new Set([...prev].filter((id) => eligible.has(id)));
-        return next.size === prev.size ? prev : next;
-      });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load");
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  }, []);
+    },
+    [statusTab, appliedQ, page],
+  );
 
   useEffect(() => {
-    void load(false);
+    // Full skeleton only on first mount; silent refreshes afterwards.
+    void load(mounted.current);
+    mounted.current = true;
   }, [load]);
 
   useEffect(() => {
@@ -1007,24 +925,18 @@ function NewOrdersPage() {
   }, []);
 
   const orders = useMemo<NewOrder[]>(() => data?.orders ?? [], [data]);
-
-  const platformFacets = useMemo(() => {
-    const m = new Map<string, number>();
-    for (const o of orders) m.set(o.platform, (m.get(o.platform) ?? 0) + 1);
-    return [...m.entries()].sort((a, b) => b[1] - a[1]);
-  }, [orders]);
-
-  const unprintedCount = useMemo(
-    () => orders.filter((o) => !o.summaryPrinted).length,
-    [orders],
-  );
+  const counts =
+    data?.counts ?? { new: 0, processing: 0, shipped: 0, completed: 0, all: 0 };
+  const total = data?.total ?? 0;
+  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const rangeStart = total === 0 ? 0 : page * PAGE_SIZE + 1;
+  const rangeEnd = Math.min((page + 1) * PAGE_SIZE, total);
+  /** Pack / Print only make sense on the Baru tab. */
+  const actionable = statusTab === "new";
 
   const feedRows = useMemo(() => {
     const rows: FeedRow[] = [];
     for (const o of orders) {
-      if (platformFilter && o.platform !== platformFilter) continue;
-      if (urgentOnly && !o.isUrgent) continue;
-      if (unprintedOnly && o.summaryPrinted) continue;
       if (o.items.length === 0) {
         rows.push({ orderId: o.orderId, order: o, item: null });
         continue;
@@ -1034,17 +946,13 @@ function NewOrdersPage() {
       }
     }
     return rows;
-  }, [orders, platformFilter, urgentOnly, unprintedOnly]);
-
-  const totals = useMemo(() => {
-    let qty = 0;
-    let amount = 0;
-    for (const o of orders) {
-      qty += o.itemTotalNum ?? o.items.reduce((s, it) => s + it.quantity, 0);
-      amount += parseMoney(o.amount) ?? 0;
-    }
-    return { qty, amount };
   }, [orders]);
+
+  /** Unprinted orders on the current page (for the select-shortcut hint). */
+  const pageUnprintedCount = useMemo(
+    () => orders.filter((o) => !o.summaryPrinted).length,
+    [orders],
+  );
 
   function toggleOrder(id: number) {
     setSelected((prev) => {
@@ -1161,25 +1069,11 @@ function NewOrdersPage() {
 
   const table = useReactTable({
     data: feedRows,
-    columns: [selectColumn, ...feedColumns],
-    state: { sorting, globalFilter, pagination },
-    initialState: { columnVisibility: { meta: false } },
-    onSortingChange: setSorting,
-    onGlobalFilterChange: setGlobalFilter,
-    onPaginationChange: setPagination,
-    autoResetPageIndex: false,
-    globalFilterFn: (row, columnId, filterValue) =>
-      String(row.getValue(columnId) ?? "")
-        .toLowerCase()
-        .includes(String(filterValue).toLowerCase()),
+    columns: actionable ? [selectColumn, ...feedColumns] : feedColumns,
     getCoreRowModel: getCoreRowModel(),
-    getSortedRowModel: getSortedRowModel(),
-    getFilteredRowModel: getFilteredRowModel(),
-    getPaginationRowModel: getPaginationRowModel(),
   });
 
   const visibleRows = table.getRowModel().rows;
-  const filteredTotal = table.getFilteredRowModel().rows.length;
 
   // Contiguous same-order runs → rowSpan for the order-level columns.
   const groupInfo = useMemo(() => {
@@ -1203,23 +1097,6 @@ function NewOrdersPage() {
     return info;
   }, [visibleRows]);
 
-  const filtersActive =
-    globalFilter !== "" ||
-    platformFilter !== null ||
-    urgentOnly ||
-    unprintedOnly;
-  const rangeStart =
-    filteredTotal === 0 ? 0 : pagination.pageIndex * pagination.pageSize + 1;
-  const rangeEnd = Math.min(rangeStart + pagination.pageSize - 1, filteredTotal);
-
-  function resetFilters() {
-    setGlobalFilter("");
-    setPlatformFilter(null);
-    setUrgentOnly(false);
-    setUnprintedOnly(false);
-    table.setPageIndex(0);
-  }
-
   return (
     <div className="flex flex-col gap-4">
       <div>
@@ -1230,118 +1107,56 @@ function NewOrdersPage() {
           Order masuk
         </h1>
         <p className="text-muted-foreground text-sm">
-          Sama dengan tab “New Orders” BigSeller · terbaru di atas · klik
-          header kolom untuk mengurutkan
+          Cermin tab order BigSeller · terbaru di atas
+          {appliedQ ? ` · cari: “${appliedQ}”` : ""}
         </p>
       </div>
 
-      <div className="flex flex-wrap items-center gap-x-8 gap-y-3 rounded-xl border bg-card px-4 py-3">
-        <FeedStat
-          label="Order baru"
-          value={loading ? "…" : String(data?.total ?? 0)}
-        />
-        <FeedStat
-          label="Belum cetak"
-          value={loading ? "…" : String(unprintedCount)}
-        />
-        <FeedStat label="Qty item" value={loading ? "…" : String(totals.qty)} />
-        <FeedStat
-          label="Nilai order"
-          value={loading ? "…" : formatIdr(totals.amount)}
-        />
-      </div>
-
       <div className="flex flex-wrap items-center gap-2">
-        <div className="relative w-full sm:w-72">
+        <div className="flex flex-wrap items-center gap-1.5">
+          {FEED_TABS.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => {
+                setStatusTab(t.id);
+                setPage(0);
+                setSelected(new Set());
+              }}
+              className={cn(
+                "inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium transition-all duration-150 active:scale-[0.97]",
+                statusTab === t.id
+                  ? "border-primary bg-primary text-primary-foreground shadow-xs"
+                  : "border-input bg-popover text-foreground hover:bg-accent/50",
+              )}
+            >
+              {t.label}
+              <span
+                className={cn(
+                  "tabular-nums",
+                  statusTab === t.id ? "opacity-70" : "text-muted-foreground",
+                )}
+              >
+                {counts[t.id]}
+              </span>
+            </button>
+          ))}
+        </div>
+
+        <div className="relative ms-auto w-full sm:w-72">
           <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
           <Input
             ref={searchRef}
-            value={globalFilter}
-            onChange={(e) => {
-              setGlobalFilter(e.target.value);
-              table.setPageIndex(0);
-            }}
-            placeholder="Cari nomor pesanan, buyer, judul, SKU…"
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            placeholder="Cari nomor pesanan / buyer…"
             className="pl-8 pr-9 text-sm"
           />
           <Kbd className="absolute top-1/2 right-2 -translate-y-1/2">/</Kbd>
         </div>
+      </div>
 
-        <div className="flex flex-wrap items-center gap-1.5">
-          <FilterChip
-            active={platformFilter === null}
-            onClick={() => {
-              setPlatformFilter(null);
-              table.setPageIndex(0);
-            }}
-          >
-            Semua
-            <span
-              className={cn(
-                "tabular-nums",
-                platformFilter === null
-                  ? "opacity-70"
-                  : "text-muted-foreground",
-              )}
-            >
-              {orders.length}
-            </span>
-          </FilterChip>
-          {platformFacets.map(([p, n]) => (
-            <FilterChip
-              key={p}
-              active={platformFilter === p}
-              onClick={() => {
-                setPlatformFilter((cur) => (cur === p ? null : p));
-                table.setPageIndex(0);
-              }}
-            >
-              {p}
-              <span
-                className={cn(
-                  "tabular-nums",
-                  platformFilter === p
-                    ? "opacity-70"
-                    : "text-muted-foreground",
-                )}
-              >
-                {n}
-              </span>
-            </FilterChip>
-          ))}
-          <FilterChip
-            active={urgentOnly}
-            activeClass="border-warning/50 bg-warning/10 text-warning-foreground"
-            onClick={() => {
-              setUrgentOnly((v) => !v);
-              table.setPageIndex(0);
-            }}
-          >
-            <Zap className="size-3" />
-            Urgent
-          </FilterChip>
-          <FilterChip
-            active={unprintedOnly}
-            activeClass="border-info/50 bg-info/10 text-info-foreground"
-            onClick={() => {
-              setUnprintedOnly((v) => !v);
-              table.setPageIndex(0);
-            }}
-          >
-            <Printer className="size-3" />
-            Belum cetak
-            <span
-              className={cn(
-                "tabular-nums",
-                unprintedOnly ? "opacity-70" : "text-muted-foreground",
-              )}
-            >
-              {unprintedCount}
-            </span>
-          </FilterChip>
-        </div>
-
-        <div className="ms-auto flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center justify-end gap-2">
           {lastUpdated && (
             <span className="hidden text-muted-foreground text-xs sm:inline">
               Diperbarui{" "}
@@ -1379,7 +1194,6 @@ function NewOrdersPage() {
             Refresh
           </Button>
         </div>
-      </div>
 
       {error && (
         <p className="text-destructive text-sm" role="alert">
@@ -1396,10 +1210,35 @@ function NewOrdersPage() {
         </div>
       ) : orders.length === 0 ? (
         <Empty className="py-16">
-          <p className="font-medium">Belum ada order masuk</p>
-          <p className="text-muted-foreground text-sm">
-            Order state=new muncul otomatis setelah sync (~60 detik).
-          </p>
+          {appliedQ ? (
+            <>
+              <p className="font-medium">Tidak ada hasil</p>
+              <p className="text-muted-foreground text-sm">
+                Tidak ada order cocok dengan “{appliedQ}” di tab ini.
+              </p>
+              <Button
+                size="sm"
+                variant="outline"
+                className="mt-2"
+                onClick={() => setSearchInput("")}
+              >
+                Hapus pencarian
+              </Button>
+            </>
+          ) : (
+            <>
+              <p className="font-medium">
+                {statusTab === "new"
+                  ? "Belum ada order baru"
+                  : "Tidak ada order di tab ini"}
+              </p>
+              <p className="text-muted-foreground text-sm">
+                {statusTab === "new"
+                  ? "Order baru muncul otomatis setelah sync (~60 detik)."
+                  : "Order berpindah tab mengikuti statusnya di BigSeller."}
+              </p>
+            </>
+          )}
         </Empty>
       ) : (
         <>
@@ -1430,17 +1269,10 @@ function NewOrdersPage() {
               {visibleRows.length === 0 ? (
                 <TableRow>
                   <TableCell
-                    colSpan={8}
+                    colSpan={actionable ? 8 : 7}
                     className="h-28 text-center whitespace-normal"
                   >
-                    <div className="flex flex-col items-center gap-2.5">
-                      <p className="text-sm">
-                        Tidak ada hasil untuk pencarian / filter ini.
-                      </p>
-                      <Button size="sm" variant="outline" onClick={resetFilters}>
-                        Hapus filter
-                      </Button>
-                    </div>
+                    <p className="text-sm">Tidak ada order di halaman ini.</p>
                   </TableCell>
                 </TableRow>
               ) : (
@@ -1496,68 +1328,51 @@ function NewOrdersPage() {
               </span>{" "}
               dari{" "}
               <span className="font-medium text-foreground tabular-nums">
-                {filteredTotal}
+                {total}
               </span>
-              {filtersActive ? " (terfilter)" : ""}
             </p>
-            <div className="flex flex-wrap items-center gap-2">
-              <select
-                value={pagination.pageSize}
-                onChange={(e) => {
-                  table.setPageSize(Number(e.target.value));
-                  table.setPageIndex(0);
-                }}
-                className="h-7 cursor-pointer rounded-lg border border-input bg-popover px-1.5 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            <div className="flex items-center gap-1">
+              <Button
+                size="xs"
+                variant="outline"
+                disabled={page === 0}
+                onClick={() => setPage((p) => p - 1)}
+                aria-label="Halaman sebelumnya"
               >
-                {[25, 50, 100].map((n) => (
-                  <option key={n} value={n}>
-                    {n} / halaman
-                  </option>
-                ))}
-              </select>
-              <div className="flex items-center gap-1">
-                <Button
-                  size="xs"
-                  variant="outline"
-                  disabled={!table.getCanPreviousPage()}
-                  onClick={() => table.previousPage()}
-                  aria-label="Halaman sebelumnya"
-                >
-                  <ChevronLeft className="size-3.5" />
-                </Button>
-                <span className="px-1.5 text-muted-foreground text-xs tabular-nums">
-                  {pagination.pageIndex + 1} /{" "}
-                  {Math.max(table.getPageCount(), 1)}
-                </span>
-                <Button
-                  size="xs"
-                  variant="outline"
-                  disabled={!table.getCanNextPage()}
-                  onClick={() => table.nextPage()}
-                  aria-label="Halaman berikutnya"
-                >
-                  <ChevronRight className="size-3.5" />
-                </Button>
-              </div>
+                <ChevronLeft className="size-3.5" />
+              </Button>
+              <span className="px-1.5 text-muted-foreground text-xs tabular-nums">
+                {page + 1} / {pageCount}
+              </span>
+              <Button
+                size="xs"
+                variant="outline"
+                disabled={page >= pageCount - 1}
+                onClick={() => setPage((p) => p + 1)}
+                aria-label="Halaman berikutnya"
+              >
+                <ChevronRight className="size-3.5" />
+              </Button>
             </div>
           </div>
         </>
       )}
 
-      {selected.size > 0 && (
+      {actionable && selected.size > 0 && (
         <div className="pointer-events-none fixed inset-x-0 bottom-4 z-50 flex justify-center px-4">
           <div className="pointer-events-auto flex flex-wrap items-center gap-2 rounded-2xl border bg-popover/95 py-2 pe-2 ps-4 shadow-xl backdrop-blur animate-bar-in">
             <div className="flex flex-col">
               <span className="text-sm font-semibold leading-tight tabular-nums">
                 {selected.size} order dipilih
               </span>
-              {unprintedCount > selected.size ? (
+              {pageUnprintedCount > selectedUnprintedIds.length ? (
                 <button
                   type="button"
                   onClick={selectAllUnprinted}
                   className="cursor-pointer text-start text-[11px] text-info-foreground hover:underline"
                 >
-                  pilih semua {unprintedCount} yang belum cetak
+                  pilih semua {pageUnprintedCount} yang belum cetak (halaman
+                  ini)
                 </button>
               ) : (
                 <span className="text-[11px] leading-tight text-muted-foreground">
