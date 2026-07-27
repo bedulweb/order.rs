@@ -159,6 +159,10 @@ export type NewOrder = {
   contactPerson: string | null;
   carrier: string | null;
   isUrgent: boolean;
+  /** Summary List already printed (batch membership and/or BigSeller marks). */
+  summaryPrinted: boolean;
+  /** Active batch session owning this order (morning/afternoon/urgent), if any. */
+  batchSession: string | null;
   amount: string | null;
   itemTotalNum: number | null;
   orderedAt: string | null;

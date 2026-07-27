@@ -25,8 +25,10 @@ import {
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
+  BadgeCheck,
   ChevronLeft,
   ChevronRight,
+  Printer,
   Search,
   Zap,
 } from "lucide-react";
@@ -649,9 +651,10 @@ type FeedRow = {
 };
 
 /** Order-level columns rendered once per contiguous order group (rowSpan). */
-const ORDER_COL_IDS = new Set(["platform", "buyer", "ekspedisi"]);
+const ORDER_COL_IDS = new Set(["status", "platform", "buyer", "ekspedisi"]);
 
 const FEED_CELL_CLASS: Record<string, string> = {
+  status: "text-center",
   judul: "max-w-[26rem] whitespace-normal",
   varian: "max-w-[12rem] whitespace-normal",
   buyer: "max-w-[12rem] whitespace-normal",
@@ -716,6 +719,35 @@ function FilterChip({
 }
 
 const feedColumns: ColumnDef<FeedRow>[] = [
+  {
+    id: "status",
+    header: "Status",
+    accessorFn: (r) => (r.order.summaryPrinted ? 1 : 0),
+    cell: ({ row }) => {
+      const o = row.original.order;
+      if (!o.summaryPrinted) {
+        return (
+          <span
+            className="inline-flex items-center justify-center rounded-md p-1 text-muted-foreground/70 transition-colors hover:text-foreground"
+            title="Belum dicetak — eligible untuk batch berikutnya"
+          >
+            <Printer className="size-4" />
+          </span>
+        );
+      }
+      const label = o.batchSession
+        ? `Sudah dicetak — batch ${o.batchSession}`
+        : "Sudah dicetak di BigSeller (summary list)";
+      return (
+        <span
+          className="inline-flex items-center justify-center rounded-md bg-success/10 p-1 text-success-foreground"
+          title={label}
+        >
+          <BadgeCheck className="size-4" />
+        </span>
+      );
+    },
+  },
   {
     id: "gambar",
     header: "Gambar",
@@ -883,6 +915,7 @@ function NewOrdersPage() {
   const [globalFilter, setGlobalFilter] = useState("");
   const [platformFilter, setPlatformFilter] = useState<string | null>(null);
   const [urgentOnly, setUrgentOnly] = useState(false);
+  const [unprintedOnly, setUnprintedOnly] = useState(false);
   const [pagination, setPagination] = useState<PaginationState>({
     pageIndex: 0,
     pageSize: 50,
@@ -950,11 +983,17 @@ function NewOrdersPage() {
     return [...m.entries()].sort((a, b) => b[1] - a[1]);
   }, [orders]);
 
+  const unprintedCount = useMemo(
+    () => orders.filter((o) => !o.summaryPrinted).length,
+    [orders],
+  );
+
   const feedRows = useMemo(() => {
     const rows: FeedRow[] = [];
     for (const o of orders) {
       if (platformFilter && o.platform !== platformFilter) continue;
       if (urgentOnly && !o.isUrgent) continue;
+      if (unprintedOnly && o.summaryPrinted) continue;
       if (o.items.length === 0) {
         rows.push({ orderId: o.orderId, order: o, item: null });
         continue;
@@ -964,7 +1003,7 @@ function NewOrdersPage() {
       }
     }
     return rows;
-  }, [orders, platformFilter, urgentOnly]);
+  }, [orders, platformFilter, urgentOnly, unprintedOnly]);
 
   const totals = useMemo(() => {
     let qty = 0;
@@ -1021,7 +1060,10 @@ function NewOrdersPage() {
   }, [visibleRows]);
 
   const filtersActive =
-    globalFilter !== "" || platformFilter !== null || urgentOnly;
+    globalFilter !== "" ||
+    platformFilter !== null ||
+    urgentOnly ||
+    unprintedOnly;
   const rangeStart =
     filteredTotal === 0 ? 0 : pagination.pageIndex * pagination.pageSize + 1;
   const rangeEnd = Math.min(rangeStart + pagination.pageSize - 1, filteredTotal);
@@ -1030,6 +1072,7 @@ function NewOrdersPage() {
     setGlobalFilter("");
     setPlatformFilter(null);
     setUrgentOnly(false);
+    setUnprintedOnly(false);
     table.setPageIndex(0);
   }
 
@@ -1052,6 +1095,10 @@ function NewOrdersPage() {
         <FeedStat
           label="Order baru"
           value={loading ? "…" : String(data?.total ?? 0)}
+        />
+        <FeedStat
+          label="Belum cetak"
+          value={loading ? "…" : String(unprintedCount)}
         />
         <FeedStat label="Qty item" value={loading ? "…" : String(totals.qty)} />
         <FeedStat
@@ -1129,6 +1176,25 @@ function NewOrdersPage() {
             <Zap className="size-3" />
             Urgent
           </FilterChip>
+          <FilterChip
+            active={unprintedOnly}
+            activeClass="border-info/50 bg-info/10 text-info-foreground"
+            onClick={() => {
+              setUnprintedOnly((v) => !v);
+              table.setPageIndex(0);
+            }}
+          >
+            <Printer className="size-3" />
+            Belum cetak
+            <span
+              className={cn(
+                "tabular-nums",
+                unprintedOnly ? "opacity-70" : "text-muted-foreground",
+              )}
+            >
+              {unprintedCount}
+            </span>
+          </FilterChip>
         </div>
 
         <div className="ms-auto flex flex-wrap items-center gap-2">
@@ -1201,6 +1267,7 @@ function NewOrdersPage() {
                     <TableHead
                       key={header.id}
                       className={cn(
+                        header.column.id === "status" && "w-14 text-center",
                         header.column.id === "gambar" && "w-16",
                         header.column.id === "harga" && "text-right",
                       )}
@@ -1250,7 +1317,10 @@ function NewOrdersPage() {
                           key={cell.id}
                           rowSpan={isOrderCol ? group.span : undefined}
                           className={cn(
-                            isOrderCol && "align-top",
+                            isOrderCol &&
+                              (cell.column.id === "status"
+                                ? "align-middle"
+                                : "align-top"),
                             FEED_CELL_CLASS[cell.column.id],
                           )}
                         >

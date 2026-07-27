@@ -667,6 +667,11 @@ pub struct NewOrderDto {
     pub contact_person: Option<String>,
     pub carrier: Option<String>,
     pub is_urgent: bool,
+    /// Summary List already printed: active batch membership and/or BigSeller
+    /// collect/pick print marks (same rule as `order_summary_was_printed`).
+    pub summary_printed: bool,
+    /// Session of the active batch owning this order (morning/afternoon/urgent).
+    pub batch_session: Option<String>,
     pub amount: Option<String>,
     pub item_total_num: Option<i32>,
     pub ordered_at: Option<DateTime<Utc>>,
@@ -703,7 +708,22 @@ pub async fn list_new_orders(
             o.id, o.platform_order_id, o.platform, s.name AS shop_name,
             o.buyer_username, o.contact_person,
             o.buyer_shipping_carrier, o.shipment_provider, o.shipping_carrier_name,
-            o.amount::text AS amount, o.item_total_num, o.ordered_at
+            o.amount::text AS amount, o.item_total_num, o.ordered_at,
+            (
+                COALESCE(o.print_collect_mark, 0) <> 0
+                OR COALESCE(o.print_pick_list_mark, 0) <> 0
+                OR EXISTS (
+                    SELECT 1 FROM batch_orders bo
+                    WHERE bo.order_id = o.id AND bo.voided_at IS NULL
+                )
+            ) AS summary_printed,
+            (
+                SELECT b.session
+                FROM batch_orders bo
+                JOIN batches b ON b.id = bo.batch_id
+                WHERE bo.order_id = o.id AND bo.voided_at IS NULL
+                LIMIT 1
+            ) AS batch_session
         FROM orders o
         LEFT JOIN shops s ON s.id = o.shop_id
         WHERE o.state = 'new'
@@ -745,6 +765,8 @@ pub async fn list_new_orders(
                 ship.as_deref(),
                 carrier_name.as_deref(),
             ),
+            summary_printed: row.get("summary_printed"),
+            batch_session: row.get("batch_session"),
             amount: opt_numeric(&row, "amount"),
             item_total_num: row.get("item_total_num"),
             ordered_at: row.get("ordered_at"),
