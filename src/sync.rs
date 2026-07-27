@@ -15,7 +15,7 @@ use crate::store::{
 };
 use chrono::{Datelike, Local, NaiveTime, Timelike, Utc};
 use serde_json::json;
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
 use std::sync::Arc;
 use tracing::{info, warn};
 
@@ -392,6 +392,151 @@ pub async fn sync_new_orders(
     sync_status_bucket(pool, api, "new", 50, 40, ctx).await
 }
 
+/// One reconciliation cycle: how many stale rows were examined / healed.
+#[derive(Debug, Clone, Default)]
+pub struct ReconcileStats {
+    pub candidates: i32,
+    /// Found in BigSeller and state actually changed (healed).
+    pub refreshed: i32,
+    /// Not found in any BigSeller search (left as-is, retried later).
+    pub not_found: i32,
+}
+
+/// Absence-based state reconciliation.
+///
+/// The worker re-upserts the whole BigSeller `new` bucket every cycle, so a
+/// row still `state = 'new'` whose `synced_at` fell behind the last passes
+/// was *not seen* — the order left the New Orders bucket (shipped,
+/// completed, canceled, …) without ever being re-pulled. Look each such
+/// order up through the all-order search and upsert its true current state.
+///
+/// Capped per cycle and newest-stale first so the one-time backlog drains
+/// gently and unfindable ancients sink to the bottom. Only call this after
+/// a successful new-bucket pass — absence is only meaningful when the
+/// bucket was actually pulled.
+pub async fn reconcile_stale_new_orders(
+    pool: &PgPool,
+    api: &OrdersApi,
+    ctx: &SyncContext,
+    stale_after_secs: u64,
+    cap: i64,
+) -> Result<ReconcileStats> {
+    let window = format!("{stale_after_secs} seconds");
+    let rows = sqlx::query(
+        r#"
+        SELECT platform_order_id
+        FROM orders
+        WHERE state = 'new'
+          AND synced_at < now() - $2::interval
+          AND ($1::bigint IS NULL OR account_id = $1)
+        GROUP BY platform_order_id
+        ORDER BY max(synced_at) DESC
+        LIMIT $3
+        "#,
+    )
+    .bind(ctx.account_id)
+    .bind(&window)
+    .bind(cap)
+    .fetch_all(pool)
+    .await?;
+
+    let mut stats = ReconcileStats::default();
+    if rows.is_empty() {
+        return Ok(stats);
+    }
+    stats.candidates = rows.len() as i32;
+
+    let kind = match &ctx.account_code {
+        Some(c) => format!("reconcile:{c}"),
+        None => "reconcile".into(),
+    };
+    let run_id = begin_sync_run(pool, &kind, ctx.account_id).await?;
+
+    let result = async {
+        for row in rows {
+            let pid: String = row.get("platform_order_id");
+            // Gentle pacing — BigSeller rate-limits search bursts.
+            tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+            let q = OrderListQuery::search_order_no(&pid);
+            let page = match api.page_list(&q).await {
+                Ok(p) => p,
+                Err(e) => {
+                    let msg = e.to_string();
+                    if msg.contains("frequent") || msg.contains("try again") || msg.contains("2001")
+                    {
+                        warn!(%msg, "reconcile search retry after backoff");
+                        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                        api.page_list(&q).await?
+                    } else {
+                        return Err(e);
+                    }
+                }
+            };
+
+            let mut found = false;
+            for r in &page.rows {
+                let Some(mapped) = map_order_row(r) else {
+                    continue;
+                };
+                if !mapped.platform_order_id.eq_ignore_ascii_case(&pid) {
+                    continue;
+                }
+                found = true;
+                let outcome = upsert_order(pool, &mapped, ctx.account_id).await?;
+                if outcome.state_changed {
+                    stats.refreshed += 1;
+                    info!(
+                        order_no = %pid,
+                        from = ?outcome.previous_state,
+                        to = %mapped.state,
+                        "reconciled stale order"
+                    );
+                }
+            }
+            if !found {
+                stats.not_found += 1;
+                warn!(order_no = %pid, "reconcile: order not found in BigSeller search");
+            }
+        }
+        Ok::<_, Error>(())
+    }
+    .await;
+
+    match result {
+        Ok(()) => {
+            finish_sync_run(
+                pool,
+                run_id,
+                "ok",
+                stats.candidates,
+                stats.refreshed,
+                None,
+                json!({
+                    "candidates": stats.candidates,
+                    "refreshed": stats.refreshed,
+                    "notFound": stats.not_found,
+                }),
+            )
+            .await?;
+            Ok(stats)
+        }
+        Err(e) => {
+            finish_sync_run(
+                pool,
+                run_id,
+                "error",
+                stats.candidates,
+                stats.refreshed,
+                Some(&e.to_string()),
+                json!({}),
+            )
+            .await
+            .ok();
+            Err(e)
+        }
+    }
+}
+
 pub async fn sync_cancel_related(
     pool: &PgPool,
     api: &OrdersApi,
@@ -571,6 +716,23 @@ impl WorkerState {
         }
     }
 
+    /// Heal stale `state = 'new'` rows after a successful new-bucket pass.
+    /// Window scales with the sync interval (3×, clamped to 3–60 minutes);
+    /// capped per cycle so a one-time backlog drains gently.
+    async fn run_reconcile(&mut self, ctx: &SyncContext) -> Result<ReconcileStats> {
+        const CAP: i64 = 15;
+        let stale_after = (self.app_cfg.new_interval_secs.saturating_mul(3)).clamp(180, 3600);
+        match reconcile_stale_new_orders(&self.pool, &self.api, ctx, stale_after, CAP).await {
+            Ok(v) => Ok(v),
+            Err(e) if client::is_auth_error(&e) && self.app_cfg.auto_relogin => {
+                warn!(error = %e, "auth expired during reconcile — re-login once");
+                self.relogin().await?;
+                reconcile_stale_new_orders(&self.pool, &self.api, ctx, stale_after, CAP).await
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     async fn run_cancel_sync(&mut self, ctx: &SyncContext) -> Result<Vec<SyncStats>> {
         match sync_cancel_related(&self.pool, &self.api, ctx).await {
             Ok(v) => Ok(v),
@@ -671,6 +833,19 @@ pub async fn run_worker(pool: PgPool, cfg: Config, app_cfg: WorkerConfig) -> Res
             Ok(s) => {
                 if s.created > 0 {
                     info!(created = s.created, "new orders detected");
+                }
+                // Absence is only meaningful after a successful bucket pass.
+                match state.run_reconcile(&ctx).await {
+                    Ok(r) if r.candidates > 0 => {
+                        info!(
+                            candidates = r.candidates,
+                            refreshed = r.refreshed,
+                            not_found = r.not_found,
+                            "reconciled stale new orders"
+                        );
+                    }
+                    Err(e) => warn!(error = %e, "reconcile failed"),
+                    _ => {}
                 }
             }
             Err(e) => warn!(error = %e, "sync new failed"),
