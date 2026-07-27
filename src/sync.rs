@@ -428,6 +428,7 @@ pub async fn reconcile_stale_new_orders(
         FROM orders
         WHERE state = 'new'
           AND synced_at < now() - $2::interval
+          AND synced_at > now() - interval '30 days'
           AND ($1::bigint IS NULL OR account_id = $1)
         GROUP BY platform_order_id
         ORDER BY max(synced_at) DESC
@@ -718,6 +719,30 @@ impl WorkerState {
         }
     }
 
+    /// Persist the live (rotated) cookies to `.session.json` + `bs_sessions`
+    /// so CLI tools and recovery paths never read a stale jar. BigSeller
+    /// rotates cookies per response; only this long-lived client sees them.
+    async fn persist_session(&self) {
+        let cookies = match self.api.current_cookies() {
+            Ok(c) if !c.is_empty() => c,
+            Ok(_) => return,
+            Err(e) => {
+                warn!(error = %e, "cookie snapshot failed — session not persisted");
+                return;
+            }
+        };
+        let mut session = SessionData::load(&self.cfg.session_path).unwrap_or_default();
+        session.cookies = cookies;
+        session.saved_at = Some(Utc::now().to_rfc3339());
+        if let Err(e) = session.save(&self.cfg.session_path) {
+            warn!(error = %e, "persist rotated session file failed");
+            return;
+        }
+        if let Err(e) = accounts::save_session_row(&self.pool, self.account.id, &session).await {
+            warn!(error = %e, "persist bs_sessions row failed");
+        }
+    }
+
     /// Heal stale `state = 'new'` rows after a successful new-bucket pass.
     /// Window scales with the sync interval (3×, clamped to 3–60 minutes);
     /// per-cycle cap is configurable (RECONCILE_CAP) so a one-time backlog
@@ -837,6 +862,8 @@ pub async fn run_worker(pool: PgPool, cfg: Config, app_cfg: WorkerConfig) -> Res
                 if s.created > 0 {
                     info!(created = s.created, "new orders detected");
                 }
+                // Keep the saved session fresh (cookies rotate per response).
+                state.persist_session().await;
                 // Absence is only meaningful after a successful bucket pass.
                 match state.run_reconcile(&ctx).await {
                     Ok(r) if r.candidates > 0 => {

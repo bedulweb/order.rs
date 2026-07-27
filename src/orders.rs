@@ -19,6 +19,12 @@ impl OrdersApi {
         })
     }
 
+    /// Snapshot of the live cookie jar, including cookies rotated by
+    /// Set-Cookie on responses (which the saved session file does not see).
+    pub fn current_cookies(&self) -> Result<std::collections::HashMap<String, String>> {
+        self.http.snapshot_cookies()
+    }
+
     /// Status counts for the order sidebar (new / packing / …).
     pub async fn status_counts(&self) -> Result<Value> {
         let body = json!({});

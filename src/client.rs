@@ -60,6 +60,9 @@ impl HttpClient {
             .user_agent(USER_AGENT)
             .default_headers(headers)
             .cookie_provider(Arc::clone(&cookie_store))
+            // Never let a hung BigSeller response wedge the worker loop.
+            .timeout(std::time::Duration::from_secs(30))
+            .connect_timeout(std::time::Duration::from_secs(10))
             .build()?;
 
         Ok(Self {
