@@ -454,6 +454,19 @@ pub async fn create_batch(
         ));
     }
 
+    finalize_batch(pool, tx, session, account_id, selected).await
+}
+
+/// Shared tail of batch creation: builds members + PDF lines from locked
+/// `selected` rows, inserts the batch + membership (committing the TX), then
+/// renders and stores the Summary List PDF outside the row locks.
+async fn finalize_batch(
+    pool: &PgPool,
+    mut tx: sqlx::Transaction<'_, sqlx::Postgres>,
+    session: BatchSession,
+    account_id: Option<i64>,
+    selected: Vec<BacklogOrder>,
+) -> Result<BatchDetail> {
     let batch_id = Uuid::new_v4();
     let now = Utc::now();
     let order_ids: Vec<i64> = selected.iter().map(|o| o.order_id).collect();
@@ -635,6 +648,123 @@ pub async fn create_batch(
         },
         members,
     })
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkippedOrder {
+    pub order_id: i64,
+    pub platform_order_id: Option<String>,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SelectionBatchResult {
+    #[serde(flatten)]
+    pub detail: BatchDetail,
+    pub skipped: Vec<SkippedOrder>,
+}
+
+/// Create a batch from an explicit order selection (ops table checkboxes).
+///
+/// Claim rules mirror `create_batch`: only `state = 'new'` rows without an
+/// active batch membership are claimable, and the partial unique index on
+/// `batch_orders` makes double-print impossible even under concurrency.
+/// Unclaimable requests are reported in `skipped` (not an error) unless
+/// nothing at all could be claimed.
+pub async fn create_batch_from_selection(
+    pool: &PgPool,
+    session: BatchSession,
+    account_id: Option<i64>,
+    requested: &[i64],
+) -> Result<SelectionBatchResult> {
+    if requested.is_empty() {
+        return Err(Error::Other("no orders selected".into()));
+    }
+
+    let mut tx = pool.begin().await?;
+
+    // Lock the requested rows that are still claimable.
+    let lock_rows = sqlx::query(
+        r#"
+        SELECT
+            o.id, o.platform_order_id, o.platform,
+            o.buyer_shipping_carrier, o.shipment_provider, o.shipping_carrier_name,
+            o.ordered_at, o.item_total_num
+        FROM orders o
+        WHERE o.id = ANY($1)
+          AND o.state = 'new'
+          AND ($2::bigint IS NULL OR o.account_id = $2)
+          AND NOT EXISTS (
+              SELECT 1 FROM batch_orders bo
+              WHERE bo.order_id = o.id AND bo.voided_at IS NULL
+          )
+        ORDER BY o.ordered_at ASC NULLS LAST, o.id ASC
+        FOR UPDATE OF o SKIP LOCKED
+        "#,
+    )
+    .bind(requested)
+    .bind(account_id)
+    .fetch_all(&mut *tx)
+    .await?;
+
+    let mut selected: Vec<BacklogOrder> = lock_rows.iter().map(row_to_backlog).collect();
+    let claimable: std::collections::HashSet<i64> = selected.iter().map(|o| o.order_id).collect();
+
+    // Explain every requested row that could not be claimed.
+    let mut skipped: Vec<SkippedOrder> = Vec::new();
+    for id in requested {
+        if claimable.contains(id) {
+            continue;
+        }
+        let info = sqlx::query(
+            r#"
+            SELECT o.platform_order_id, o.state,
+                   EXISTS (
+                       SELECT 1 FROM batch_orders bo
+                       WHERE bo.order_id = o.id AND bo.voided_at IS NULL
+                   ) AS in_batch
+            FROM orders o
+            WHERE o.id = $1
+            "#,
+        )
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let (platform_order_id, reason) = match info {
+            None => (None, "order tidak ditemukan".to_string()),
+            Some(r) => {
+                let in_batch: bool = r.get("in_batch");
+                let state: String = r.get("state");
+                let reason = if in_batch {
+                    "sudah masuk batch lain".to_string()
+                } else if state != "new" {
+                    format!("state berubah ({state})")
+                } else {
+                    "sedang diklaim bersamaan".to_string()
+                };
+                (r.get("platform_order_id"), reason)
+            }
+        };
+        skipped.push(SkippedOrder {
+            order_id: *id,
+            platform_order_id,
+            reason,
+        });
+    }
+
+    if selected.is_empty() {
+        return Err(Error::Other(
+            "tidak ada order yang bisa diklaim (sudah masuk batch atau state berubah)".into(),
+        ));
+    }
+
+    // Manual selection keeps every claimed row; urgent first for the pick list.
+    sort_backlog_orders(&mut selected);
+
+    let detail = finalize_batch(pool, tx, session, account_id, selected).await?;
+    Ok(SelectionBatchResult { detail, skipped })
 }
 
 pub async fn list_batches_for_wib_date(

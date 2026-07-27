@@ -190,6 +190,27 @@ export function createBatch(session: BatchSession): Promise<BatchDetail> {
   });
 }
 
+export type SkippedOrder = {
+  orderId: number;
+  platformOrderId: string | null;
+  reason: string;
+};
+
+export type SelectionBatchResult = BatchDetail & {
+  skipped: SkippedOrder[];
+};
+
+/** Claim an explicit order selection into a new batch + Summary List PDF. */
+export function createBatchFromSelection(
+  session: BatchSession,
+  orderIds: number[],
+): Promise<SelectionBatchResult> {
+  return request("/v1/batches/from-selection", {
+    method: "POST",
+    body: JSON.stringify({ session, orderIds }),
+  });
+}
+
 export function fetchBatch(id: string): Promise<BatchDetail> {
   return request(`/v1/batches/${id}`);
 }

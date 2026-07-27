@@ -30,12 +30,14 @@ import {
   ChevronRight,
   Printer,
   Search,
+  X,
   Zap,
 } from "lucide-react";
 import {
   ApiError,
   clearToken,
   createBatch,
+  createBatchFromSelection,
   downloadBatchPdf,
   fetchBacklog,
   fetchBatch,
@@ -58,9 +60,11 @@ import {
   type NewOrder,
   type NewOrderItem,
   type NewOrdersResponse,
+  type SelectionBatchResult,
 } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Card,
   CardDescription,
@@ -651,13 +655,20 @@ type FeedRow = {
 };
 
 /** Order-level columns rendered once per contiguous order group (rowSpan). */
-const ORDER_COL_IDS = new Set(["status", "platform", "buyer", "ekspedisi"]);
+const ORDER_COL_IDS = new Set(["select", "status", "platform", "buyer", "ekspedisi"]);
 
 const FEED_CELL_CLASS: Record<string, string> = {
+  select: "text-center",
   status: "text-center",
   judul: "max-w-[26rem] whitespace-normal",
   varian: "max-w-[12rem] whitespace-normal",
   buyer: "max-w-[12rem] whitespace-normal",
+};
+
+const SESSION_LABEL: Record<BatchSession, string> = {
+  morning: "pagi",
+  afternoon: "siang",
+  urgent: "urgent",
 };
 
 function SortableHead({
@@ -922,6 +933,13 @@ function NewOrdersPage() {
   });
   const searchRef = useRef<HTMLInputElement>(null);
 
+  // Bulk selection: order-level (rows are per item, many rows share an order).
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [printing, setPrinting] = useState<BatchSession | null>(null);
+  const [printResult, setPrintResult] = useState<SelectionBatchResult | null>(
+    null,
+  );
+
   const load = useCallback(async (silent: boolean) => {
     if (!silent) setLoading(true);
     setRefreshing(true);
@@ -939,6 +957,14 @@ function NewOrdersPage() {
       }
       setData(resp);
       setLastUpdated(new Date());
+      // Drop selections that are no longer claimable (printed / gone).
+      const eligible = new Set(
+        resp.orders.filter((o) => !o.summaryPrinted).map((o) => o.orderId),
+      );
+      setSelected((prev) => {
+        const next = new Set([...prev].filter((id) => eligible.has(id)));
+        return next.size === prev.size ? prev : next;
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load");
     } finally {
@@ -1015,9 +1041,95 @@ function NewOrdersPage() {
     return { qty, amount };
   }, [orders]);
 
+  function toggleOrder(id: number) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function selectAllUnprinted() {
+    setSelected(
+      new Set(
+        feedRows.filter((r) => !r.order.summaryPrinted).map((r) => r.orderId),
+      ),
+    );
+  }
+
+  const unprintedSelection = useMemo(() => {
+    let total = 0;
+    let chosen = 0;
+    for (const r of feedRows) {
+      if (r.order.summaryPrinted) continue;
+      total++;
+      if (selected.has(r.orderId)) chosen++;
+    }
+    return { total, chosen };
+  }, [feedRows, selected]);
+
+  async function printSelected(session: BatchSession) {
+    const ids = [...selected];
+    if (ids.length === 0 || printing) return;
+    setPrinting(session);
+    setError(null);
+    try {
+      const result = await createBatchFromSelection(session, ids);
+      setPrintResult(result);
+      setSelected(new Set());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Gagal membuat batch");
+    } finally {
+      setPrinting(null);
+    }
+  }
+
+  const selectColumn: ColumnDef<FeedRow> = {
+    id: "select",
+    header: () => (
+      <Checkbox
+        checked={
+          unprintedSelection.total > 0 &&
+          unprintedSelection.chosen === unprintedSelection.total
+        }
+        indeterminate={
+          unprintedSelection.chosen > 0 &&
+          unprintedSelection.chosen < unprintedSelection.total
+        }
+        disabled={unprintedSelection.total === 0}
+        onCheckedChange={() => {
+          if (
+            unprintedSelection.total > 0 &&
+            unprintedSelection.chosen === unprintedSelection.total
+          ) {
+            setSelected(new Set());
+          } else {
+            selectAllUnprinted();
+          }
+        }}
+        aria-label="Pilih semua order yang belum dicetak"
+      />
+    ),
+    cell: ({ row }) => {
+      const o = row.original.order;
+      if (o.summaryPrinted) {
+        return <span className="block size-4" aria-hidden />;
+      }
+      return (
+        <Checkbox
+          checked={selected.has(o.orderId)}
+          onCheckedChange={() => toggleOrder(o.orderId)}
+          aria-label={`Pilih ${o.platformOrderId}`}
+        />
+      );
+    },
+    enableSorting: false,
+  };
+
   const table = useReactTable({
     data: feedRows,
-    columns: feedColumns,
+    columns: [selectColumn, ...feedColumns],
     state: { sorting, globalFilter, pagination },
     initialState: { columnVisibility: { meta: false } },
     onSortingChange: setSorting,
@@ -1267,6 +1379,7 @@ function NewOrdersPage() {
                     <TableHead
                       key={header.id}
                       className={cn(
+                        header.column.id === "select" && "w-10 text-center",
                         header.column.id === "status" && "w-14 text-center",
                         header.column.id === "gambar" && "w-16",
                         header.column.id === "harga" && "text-right",
@@ -1285,7 +1398,7 @@ function NewOrdersPage() {
               {visibleRows.length === 0 ? (
                 <TableRow>
                   <TableCell
-                    colSpan={7}
+                    colSpan={8}
                     className="h-28 text-center whitespace-normal"
                   >
                     <div className="flex flex-col items-center gap-2.5">
@@ -1318,9 +1431,11 @@ function NewOrdersPage() {
                           rowSpan={isOrderCol ? group.span : undefined}
                           className={cn(
                             isOrderCol &&
-                              (cell.column.id === "status"
-                                ? "align-middle"
-                                : "align-top"),
+                              (cell.column.id === "platform" ||
+                              cell.column.id === "buyer" ||
+                              cell.column.id === "ekspedisi"
+                                ? "align-top"
+                                : "align-middle"),
                             FEED_CELL_CLASS[cell.column.id],
                           )}
                         >
@@ -1396,6 +1511,120 @@ function NewOrdersPage() {
           </div>
         </>
       )}
+
+      {selected.size > 0 && (
+        <div className="pointer-events-none fixed inset-x-0 bottom-4 z-50 flex justify-center px-4">
+          <div className="pointer-events-auto flex flex-wrap items-center gap-2 rounded-2xl border bg-popover/95 py-2 pe-2 ps-4 shadow-xl backdrop-blur animate-bar-in">
+            <div className="flex flex-col">
+              <span className="text-sm font-semibold leading-tight tabular-nums">
+                {selected.size} order dipilih
+              </span>
+              {unprintedCount > selected.size ? (
+                <button
+                  type="button"
+                  onClick={selectAllUnprinted}
+                  className="cursor-pointer text-start text-[11px] text-info-foreground hover:underline"
+                >
+                  pilih semua {unprintedCount} yang belum cetak
+                </button>
+              ) : (
+                <span className="text-[11px] leading-tight text-muted-foreground">
+                  Summary List PDF · klaim sekali, anti double print
+                </span>
+              )}
+            </div>
+            <div className="mx-1 h-8 w-px bg-border" />
+            <Button
+              size="sm"
+              loading={printing === "morning"}
+              disabled={printing !== null}
+              onClick={() => void printSelected("morning")}
+            >
+              <Printer className="size-3.5" /> Print pagi
+            </Button>
+            <Button
+              size="sm"
+              variant="secondary"
+              loading={printing === "afternoon"}
+              disabled={printing !== null}
+              onClick={() => void printSelected("afternoon")}
+            >
+              <Printer className="size-3.5" /> Print siang
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              loading={printing === "urgent"}
+              disabled={printing !== null}
+              onClick={() => void printSelected("urgent")}
+            >
+              <Zap className="size-3.5" /> Urgent
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={printing !== null}
+              onClick={() => setSelected(new Set())}
+              aria-label="Batal pilih"
+            >
+              <X className="size-3.5" />
+            </Button>
+          </div>
+        </div>
+      )}
+
+      <Dialog
+        open={printResult !== null}
+        onOpenChange={(open) => {
+          if (!open && printing === null) {
+            setPrintResult(null);
+            void load(true);
+          }
+        }}
+      >
+        <DialogPopup>
+          <DialogHeader>
+            <DialogTitle>
+              Batch{" "}
+              {printResult
+                ? (SESSION_LABEL[printResult.session as BatchSession] ??
+                  printResult.session)
+                : ""}{" "}
+              dibuat
+            </DialogTitle>
+            <DialogDescription>
+              {printResult?.orderCount} order diklaim — Summary List PDF siap
+              diunduh. Order yang sudah diklaim tidak bisa masuk batch lain.
+            </DialogDescription>
+          </DialogHeader>
+          {printResult && printResult.skipped.length > 0 && (
+            <div className="rounded-lg border border-warning/30 bg-warning/8 px-3 py-2">
+              <p className="font-medium text-sm text-warning-foreground">
+                {printResult.skipped.length} order dilewati
+              </p>
+              <ul className="mt-1 list-disc ps-4 text-muted-foreground text-xs">
+                {printResult.skipped.slice(0, 5).map((s) => (
+                  <li key={s.orderId}>
+                    <span className="font-mono">
+                      {s.platformOrderId ?? s.orderId}
+                    </span>{" "}
+                    — {s.reason}
+                  </li>
+                ))}
+                {printResult.skipped.length > 5 && (
+                  <li>…dan {printResult.skipped.length - 5} lainnya</li>
+                )}
+              </ul>
+            </div>
+          )}
+          <DialogFooter>
+            <DialogClose render={<Button variant="outline" />}>Tutup</DialogClose>
+            <Button render={<Link to={`/batches/${printResult?.id ?? ""}`} />}>
+              Buka batch + PDF
+            </Button>
+          </DialogFooter>
+        </DialogPopup>
+      </Dialog>
     </div>
   );
 }

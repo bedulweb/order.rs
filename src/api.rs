@@ -62,6 +62,10 @@ pub fn router(state: ApiState) -> Router {
         // Ops batches (pick lists)
         .route("/v1/batches/backlog", get(batches_backlog))
         .route("/v1/batches", get(batches_list).post(batches_create))
+        .route(
+            "/v1/batches/from-selection",
+            post(batches_create_from_selection),
+        )
         .route("/v1/batches/{id}", get(batches_get))
         .route("/v1/batches/{id}/pdf", get(batches_pdf))
         .route(
@@ -621,6 +625,37 @@ async fn batches_create(
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateBatchFromSelectionBody {
+    session: String,
+    order_ids: Vec<i64>,
+    account: Option<String>,
+}
+
+/// POST `/v1/batches/from-selection` — claim an explicit order selection
+/// (ops table checkboxes) into a new batch + Summary List PDF.
+async fn batches_create_from_selection(
+    State(st): State<ApiState>,
+    headers: HeaderMap,
+    Json(body): Json<CreateBatchFromSelectionBody>,
+) -> std::result::Result<Json<batch::SelectionBatchResult>, ApiError> {
+    check_auth(&st, &headers)?;
+    let session = BatchSession::parse(&body.session)
+        .ok_or_else(|| ApiError::BadRequest("session must be morning|afternoon|urgent".into()))?;
+    if body.order_ids.is_empty() {
+        return Err(ApiError::BadRequest("orderIds required".into()));
+    }
+    if body.order_ids.len() > 1000 {
+        return Err(ApiError::BadRequest("max 1000 orders per batch".into()));
+    }
+    let account_id = resolve_account_id(&st.pool, body.account.as_deref()).await?;
+    let result = batch::create_batch_from_selection(&st.pool, session, account_id, &body.order_ids)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(result))
+}
+
+#[derive(Debug, Deserialize)]
 struct BatchesListQuery {
     /// WIB calendar day YYYY-MM-DD (default: today WIB).
     date: Option<String>,
@@ -871,7 +906,10 @@ impl From<crate::error::Error> for ApiError {
     fn from(e: crate::error::Error) -> Self {
         // Empty backlog on generate is a client-facing 400, not a 500.
         if let crate::error::Error::Other(ref m) = e {
-            if m.contains("no eligible orders") {
+            if m.contains("no eligible orders")
+                || m.contains("tidak ada order yang bisa diklaim")
+                || m.contains("no orders selected")
+            {
                 return ApiError::BadRequest(m.clone());
             }
         }
@@ -932,6 +970,7 @@ mod tests {
             "/v1/orders/new",
             "/v1/batches/backlog",
             "/v1/batches",
+            "/v1/batches/from-selection",
             "/v1/batches/{id}",
             "/v1/batches/{id}/pdf",
             "/v1/batches/{id}/regenerate-pdf",
