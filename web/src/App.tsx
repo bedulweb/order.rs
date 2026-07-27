@@ -1043,8 +1043,8 @@ function NewOrdersPage() {
           Order masuk
         </h1>
         <p className="text-muted-foreground text-sm">
-          Semua order state=new · terbaru di atas · klik header kolom untuk
-          mengurutkan
+          Sama dengan tab “New Orders” BigSeller · terbaru di atas · klik
+          header kolom untuk mengurutkan
         </p>
       </div>
 

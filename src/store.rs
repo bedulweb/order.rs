@@ -680,8 +680,17 @@ pub struct NewOrdersResponse {
     pub orders: Vec<NewOrderDto>,
 }
 
-/// Incoming-orders feed for the ops table: `state = 'new'`, newest first,
-/// with line items (thumbnail, title, variant, price) loaded in one batch.
+/// Freshness window that defines "currently new". The worker re-upserts the
+/// whole BigSeller `status=new` bucket every sync cycle (default 60s), so a
+/// recent `synced_at` means the order is still in BigSeller's New Orders tab.
+/// Rows whose `synced_at` is older are stale state: the order already moved
+/// on (shipped / completed / …) and was never re-pulled into a new state.
+/// Matches the count shown by BigSeller's own "New Orders" page.
+const NEW_FEED_WINDOW: &str = "15 minutes";
+
+/// Incoming-orders feed for the ops table: orders currently in BigSeller's
+/// "New Orders" bucket (`state = 'new'` with a fresh `synced_at`), newest
+/// first, with line items (thumbnail, title, variant, price) in one batch.
 pub async fn list_new_orders(
     pool: &PgPool,
     account_id: Option<i64>,
@@ -698,6 +707,7 @@ pub async fn list_new_orders(
         FROM orders o
         LEFT JOIN shops s ON s.id = o.shop_id
         WHERE o.state = 'new'
+          AND o.synced_at > now() - $3::interval
           AND ($1::bigint IS NULL OR o.account_id = $1)
         ORDER BY o.ordered_at DESC NULLS LAST, o.id DESC
         LIMIT $2
@@ -705,6 +715,7 @@ pub async fn list_new_orders(
     )
     .bind(account_id)
     .bind(limit)
+    .bind(NEW_FEED_WINDOW)
     .fetch_all(pool)
     .await?;
 
@@ -746,10 +757,12 @@ pub async fn list_new_orders(
         SELECT COUNT(*)::bigint
         FROM orders
         WHERE state = 'new'
+          AND synced_at > now() - $2::interval
           AND ($1::bigint IS NULL OR account_id = $1)
         "#,
     )
     .bind(account_id)
+    .bind(NEW_FEED_WINDOW)
     .fetch_one(pool)
     .await?;
 
