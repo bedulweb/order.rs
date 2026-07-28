@@ -1136,6 +1136,512 @@ pub async fn today_stats(pool: &PgPool, account_id: Option<i64>) -> Result<Today
     })
 }
 
+// ---------------------------------------------------------------------------
+// Analytics (multi-period dashboard)
+// ---------------------------------------------------------------------------
+
+/// Match an order-item SKU to a catalog ART: exact first, then the longest
+/// dash-prefix (variant SKUs like `OB-015-4-XL` fall back to `OB-015-4` /
+/// `OB-015`). Also normalizes the marketplace `0B-` typo to `OB-`.
+const HPP_MATCH_SQL: &str = r#"
+    (SELECT p.hpp FROM product_catalog p
+     WHERE p.art IN (
+         regexp_replace(btrim(COALESCE(oi.sku, '')), '^0B-', 'OB-'),
+         array_to_string((string_to_array(regexp_replace(btrim(COALESCE(oi.sku, '')), '^0B-', 'OB-'), '-'))[1:3], '-'),
+         array_to_string((string_to_array(regexp_replace(btrim(COALESCE(oi.sku, '')), '^0B-', 'OB-'), '-'))[1:2], '-')
+     )
+     ORDER BY length(p.art) DESC
+     LIMIT 1)"#;
+
+/// Items of non-canceled orders in the window, with resolved HPP.
+const ANALYTICS_ITEMS_CTE: &str = r#"
+    WITH it AS (
+        SELECT
+            o.platform,
+            o.ordered_at,
+            oi.quantity::bigint AS qty,
+            oi.amount,
+            COALESCE(NULLIF(btrim(oi.sku), ''), oi.item_name, 'Tanpa SKU') AS sku,
+            COALESCE(oi.item_name, pc_name.name) AS name,"#;
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnalyticsTotals {
+    pub orders: i64,
+    pub canceled_orders: i64,
+    pub cancel_rate: f64,
+    pub items: i64,
+    pub qty: i64,
+    /// Share of sold qty whose HPP is known (0..1).
+    pub hpp_coverage: f64,
+    /// Money fields are decimal strings (IDR).
+    pub revenue: String,
+    /// Revenue of items with known HPP — the only part margin can describe.
+    pub revenue_covered: String,
+    pub cost: String,
+    pub margin: String,
+    /// Margin % over covered revenue; null when nothing is covered.
+    pub margin_pct: Option<f64>,
+    pub aov: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnalyticsDay {
+    pub date: String,
+    pub orders: i64,
+    pub revenue: String,
+    pub margin: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnalyticsPlatform {
+    pub platform: String,
+    pub orders: i64,
+    pub canceled_orders: i64,
+    pub items: i64,
+    pub revenue: String,
+    pub cost: String,
+    pub margin: String,
+    pub margin_pct: Option<f64>,
+    pub hpp_coverage: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnalyticsProduct {
+    pub sku: String,
+    pub name: Option<String>,
+    pub qty: i64,
+    pub revenue: String,
+    pub cost: String,
+    pub margin: String,
+    pub margin_pct: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Analytics {
+    pub days: i64,
+    pub currency: String,
+    pub totals: AnalyticsTotals,
+    pub daily: Vec<AnalyticsDay>,
+    pub platforms: Vec<AnalyticsPlatform>,
+    pub carriers: Vec<CarrierCount>,
+    pub states: Vec<StateCount>,
+    pub top_revenue: Vec<AnalyticsProduct>,
+    pub top_margin: Vec<AnalyticsProduct>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StateCount {
+    pub state: String,
+    pub count: i64,
+}
+
+fn pct(margin: f64, revenue: f64) -> Option<f64> {
+    if revenue > 0.0 {
+        Some((margin / revenue * 1000.0).round() / 10.0)
+    } else {
+        None
+    }
+}
+
+fn parse_dec(s: &str) -> f64 {
+    s.parse().unwrap_or(0.0)
+}
+
+/// Full analytics payload for the last `days` WIB-anchored window.
+///
+/// Margin = revenue − HPP×qty over items whose SKU matched the product
+/// catalog; `hpp_coverage` says how much of the sold qty that covers.
+/// Marketplace fees are intentionally not included (payload.feeDetail is
+/// sparse and inconsistent).
+pub async fn analytics(pool: &PgPool, account_id: Option<i64>, days: i64) -> Result<Analytics> {
+    let days = days.clamp(1, 1100);
+    let window = format!("{days} days");
+
+    // Order-level totals + cancel rate.
+    let t = sqlx::query(
+        r#"
+        SELECT
+            count(*) FILTER (WHERE state NOT IN ('canceled', 'cancelled'))::bigint AS orders,
+            count(*) FILTER (WHERE state IN ('canceled', 'cancelled'))::bigint AS canceled
+        FROM orders
+        WHERE ordered_at >= now() - $1::interval
+          AND state <> 'archived'
+          AND ($2::bigint IS NULL OR account_id = $2)
+        "#,
+    )
+    .bind(&window)
+    .bind(account_id)
+    .fetch_one(pool)
+    .await?;
+    let orders: i64 = t.get("orders");
+    let canceled: i64 = t.get("canceled");
+    let cancel_rate = if orders + canceled > 0 {
+        (canceled as f64 / (orders + canceled) as f64 * 1000.0).round() / 10.0
+    } else {
+        0.0
+    };
+
+    // Item-level money (revenue / cost / margin / coverage).
+    let m = sqlx::query(&format!(
+        r#"
+        {ANALYTICS_ITEMS_CTE}
+            {HPP_MATCH_SQL} AS hpp
+        FROM order_items oi
+        JOIN orders o ON o.id = oi.order_id
+        LEFT JOIN product_catalog pc_name ON pc_name.art = btrim(oi.sku)
+        WHERE o.ordered_at >= now() - $1::interval
+          AND o.state NOT IN ('canceled', 'cancelled', 'archived')
+          AND oi.is_addition IS NOT TRUE
+          AND ($2::bigint IS NULL OR o.account_id = $2)
+    )
+    SELECT
+        count(*)::bigint AS items,
+        COALESCE(SUM(qty), 0)::bigint AS qty,
+        COALESCE(SUM(qty) FILTER (WHERE hpp IS NOT NULL), 0)::bigint AS qty_covered,
+        COALESCE(SUM(amount), 0)::text AS revenue,
+        COALESCE(SUM(amount) FILTER (WHERE hpp IS NOT NULL), 0)::text AS revenue_covered,
+        COALESCE(SUM(hpp::numeric * qty), 0)::text AS cost
+    FROM it
+        "#
+    ))
+    .bind(&window)
+    .bind(account_id)
+    .fetch_one(pool)
+    .await?;
+    let items: i64 = m.get("items");
+    let qty: i64 = m.get("qty");
+    let qty_covered: i64 = m.get("qty_covered");
+    let revenue_s: String = m.get("revenue");
+    let revenue_covered_s: String = m.get("revenue_covered");
+    let cost_s: String = m.get("cost");
+    let revenue_covered = parse_dec(&revenue_covered_s);
+    let cost = parse_dec(&cost_s);
+    let margin = revenue_covered - cost;
+    let hpp_coverage = if qty > 0 {
+        (qty_covered as f64 / qty as f64 * 1000.0).round() / 1000.0
+    } else {
+        0.0
+    };
+    let revenue = parse_dec(&revenue_s);
+    let aov = if orders > 0 { revenue / orders as f64 } else { 0.0 };
+
+    // Daily trend: orders per day + money per day (merged in Rust).
+    let day_orders = sqlx::query(
+        r#"
+        SELECT to_char(timezone('Asia/Jakarta', ordered_at), 'YYYY-MM-DD') AS d,
+               count(*)::bigint AS n
+        FROM orders
+        WHERE ordered_at >= now() - $1::interval
+          AND state NOT IN ('canceled', 'cancelled', 'archived')
+          AND ($2::bigint IS NULL OR account_id = $2)
+        GROUP BY 1
+        "#,
+    )
+    .bind(&window)
+    .bind(account_id)
+    .fetch_all(pool)
+    .await?;
+
+    let day_money = sqlx::query(&format!(
+        r#"
+        {ANALYTICS_ITEMS_CTE}
+            {HPP_MATCH_SQL} AS hpp
+        FROM order_items oi
+        JOIN orders o ON o.id = oi.order_id
+        LEFT JOIN product_catalog pc_name ON pc_name.art = btrim(oi.sku)
+        WHERE o.ordered_at >= now() - $1::interval
+          AND o.state NOT IN ('canceled', 'cancelled', 'archived')
+          AND oi.is_addition IS NOT TRUE
+          AND ($2::bigint IS NULL OR o.account_id = $2)
+    )
+    SELECT to_char(timezone('Asia/Jakarta', ordered_at), 'YYYY-MM-DD') AS d,
+           COALESCE(SUM(amount), 0)::text AS revenue,
+           (COALESCE(SUM(amount) FILTER (WHERE hpp IS NOT NULL), 0)
+             - COALESCE(SUM(hpp::numeric * qty), 0))::text AS margin
+    FROM it
+    GROUP BY 1
+        "#
+    ))
+    .bind(&window)
+    .bind(account_id)
+    .fetch_all(pool)
+    .await?;
+
+    let mut daily: std::collections::BTreeMap<String, AnalyticsDay> = std::collections::BTreeMap::new();
+    for r in day_orders {
+        daily.insert(
+            r.get("d"),
+            AnalyticsDay {
+                date: r.get("d"),
+                orders: r.get("n"),
+                revenue: "0".into(),
+                margin: "0".into(),
+            },
+        );
+    }
+    for r in day_money {
+        let d: String = r.get("d");
+        let rev: String = r.get("revenue");
+        let mar: String = r.get("margin");
+        daily
+            .entry(d.clone())
+            .or_insert_with(|| AnalyticsDay {
+                date: d,
+                orders: 0,
+                revenue: "0".into(),
+                margin: "0".into(),
+            })
+            .revenue = rev;
+        if let Some(day) = daily.get_mut(&r.get::<String, _>("d")) {
+            day.margin = mar;
+        }
+    }
+    // Continuous date axis: fill days without orders with zeros so the chart
+    // is a proper time series (sparse historical data shows as flat, not as
+    // a misleading squeeze).
+    let wib = chrono::FixedOffset::east_opt(crate::batch::WIB_OFFSET_SECS)
+        .expect("WIB offset is valid");
+    let today = chrono::Utc::now().with_timezone(&wib).date_naive();
+    let mut daily_map = daily;
+    let mut daily: Vec<AnalyticsDay> = Vec::with_capacity(days as usize);
+    for i in (0..days).rev() {
+        let key = (today - chrono::Duration::days(i)).to_string();
+        match daily_map.remove(&key) {
+            Some(day) => daily.push(day),
+            None => daily.push(AnalyticsDay {
+                date: key,
+                orders: 0,
+                revenue: "0".into(),
+                margin: "0".into(),
+            }),
+        }
+    }
+
+    // Per-platform comparison.
+    let plat_orders = sqlx::query(
+        r#"
+        SELECT COALESCE(NULLIF(btrim(platform), ''), 'lainnya') AS platform,
+               count(*) FILTER (WHERE state NOT IN ('canceled', 'cancelled'))::bigint AS orders,
+               count(*) FILTER (WHERE state IN ('canceled', 'cancelled'))::bigint AS canceled
+        FROM orders
+        WHERE ordered_at >= now() - $1::interval
+          AND state <> 'archived'
+          AND ($2::bigint IS NULL OR account_id = $2)
+        GROUP BY 1
+        "#,
+    )
+    .bind(&window)
+    .bind(account_id)
+    .fetch_all(pool)
+    .await?;
+
+    let plat_money = sqlx::query(&format!(
+        r#"
+        {ANALYTICS_ITEMS_CTE}
+            {HPP_MATCH_SQL} AS hpp
+        FROM order_items oi
+        JOIN orders o ON o.id = oi.order_id
+        LEFT JOIN product_catalog pc_name ON pc_name.art = btrim(oi.sku)
+        WHERE o.ordered_at >= now() - $1::interval
+          AND o.state NOT IN ('canceled', 'cancelled', 'archived')
+          AND oi.is_addition IS NOT TRUE
+          AND ($2::bigint IS NULL OR o.account_id = $2)
+    )
+    SELECT platform,
+           count(*)::bigint AS items,
+           COALESCE(SUM(qty), 0)::bigint AS qty,
+           COALESCE(SUM(qty) FILTER (WHERE hpp IS NOT NULL), 0)::bigint AS qty_covered,
+           COALESCE(SUM(amount), 0)::text AS revenue,
+           COALESCE(SUM(amount) FILTER (WHERE hpp IS NOT NULL), 0)::text AS revenue_covered,
+           COALESCE(SUM(hpp::numeric * qty), 0)::text AS cost
+    FROM it
+    GROUP BY 1
+        "#
+    ))
+    .bind(&window)
+    .bind(account_id)
+    .fetch_all(pool)
+    .await?;
+
+    let mut platforms: std::collections::BTreeMap<String, AnalyticsPlatform> =
+        std::collections::BTreeMap::new();
+    for r in plat_orders {
+        let p: String = r.get("platform");
+        platforms.insert(
+            p.clone(),
+            AnalyticsPlatform {
+                platform: p,
+                orders: r.get("orders"),
+                canceled_orders: r.get("canceled"),
+                items: 0,
+                revenue: "0".into(),
+                cost: "0".into(),
+                margin: "0".into(),
+                margin_pct: None,
+                hpp_coverage: 0.0,
+            },
+        );
+    }
+    for r in plat_money {
+        let p: String = r.get("platform");
+        let qty_p: i64 = r.get("qty");
+        let qty_c: i64 = r.get("qty_covered");
+        let rev_c: String = r.get("revenue_covered");
+        let cost_p: String = r.get("cost");
+        let margin_p = parse_dec(&rev_c) - parse_dec(&cost_p);
+        if let Some(e) = platforms.get_mut(&p) {
+            e.items = r.get("items");
+            e.revenue = r.get("revenue");
+            e.cost = cost_p;
+            e.margin = format!("{margin_p:.2}");
+            e.margin_pct = pct(margin_p, parse_dec(&rev_c));
+            e.hpp_coverage = if qty_p > 0 {
+                (qty_c as f64 / qty_p as f64 * 1000.0).round() / 1000.0
+            } else {
+                0.0
+            };
+        }
+    }
+    let mut platforms: Vec<AnalyticsPlatform> = platforms.into_values().collect();
+    platforms.sort_by(|a, b| parse_dec(&b.revenue).total_cmp(&parse_dec(&a.revenue)));
+
+    // Carriers (order counts).
+    let carrier_rows = sqlx::query(
+        r#"
+        SELECT COALESCE(
+                   NULLIF(btrim(buyer_shipping_carrier), ''),
+                   NULLIF(btrim(shipment_provider), ''),
+                   NULLIF(btrim(shipping_carrier_name), ''),
+                   'Lainnya') AS carrier,
+               count(*)::bigint AS count
+        FROM orders
+        WHERE ordered_at >= now() - $1::interval
+          AND state NOT IN ('canceled', 'cancelled', 'archived')
+          AND ($2::bigint IS NULL OR account_id = $2)
+        GROUP BY 1
+        ORDER BY 2 DESC, 1 ASC
+        "#,
+    )
+    .bind(&window)
+    .bind(account_id)
+    .fetch_all(pool)
+    .await?;
+    let carriers: Vec<CarrierCount> = carrier_rows
+        .iter()
+        .map(|r| CarrierCount {
+            carrier: r.get("carrier"),
+            count: r.get("count"),
+        })
+        .collect();
+
+    // State funnel.
+    let state_rows = sqlx::query(
+        r#"
+        SELECT state, count(*)::bigint AS n
+        FROM orders
+        WHERE ordered_at >= now() - $1::interval
+          AND state <> 'archived'
+          AND ($2::bigint IS NULL OR account_id = $2)
+        GROUP BY 1
+        ORDER BY 2 DESC
+        "#,
+    )
+    .bind(&window)
+    .bind(account_id)
+    .fetch_all(pool)
+    .await?;
+    let states: Vec<StateCount> = state_rows
+        .iter()
+        .map(|r| StateCount {
+            state: r.get("state"),
+            count: r.get("n"),
+        })
+        .collect();
+
+    // Top products (grouped once, ranked in Rust).
+    let prod_rows = sqlx::query(&format!(
+        r#"
+        {ANALYTICS_ITEMS_CTE}
+            {HPP_MATCH_SQL} AS hpp
+        FROM order_items oi
+        JOIN orders o ON o.id = oi.order_id
+        LEFT JOIN product_catalog pc_name ON pc_name.art = btrim(oi.sku)
+        WHERE o.ordered_at >= now() - $1::interval
+          AND o.state NOT IN ('canceled', 'cancelled', 'archived')
+          AND oi.is_addition IS NOT TRUE
+          AND ($2::bigint IS NULL OR o.account_id = $2)
+    )
+    SELECT sku,
+           MAX(name) AS name,
+           COALESCE(SUM(qty), 0)::bigint AS qty,
+           COALESCE(SUM(amount), 0)::text AS revenue,
+           COALESCE(SUM(amount) FILTER (WHERE hpp IS NOT NULL), 0)::text AS revenue_covered,
+           COALESCE(SUM(hpp::numeric * qty), 0)::text AS cost
+    FROM it
+    GROUP BY 1
+        "#
+    ))
+    .bind(&window)
+    .bind(account_id)
+    .fetch_all(pool)
+    .await?;
+
+    let mut products: Vec<AnalyticsProduct> = prod_rows
+        .iter()
+        .map(|r| {
+            let rev_c: String = r.get("revenue_covered");
+            let cost_p: String = r.get("cost");
+            let margin_p = parse_dec(&rev_c) - parse_dec(&cost_p);
+            AnalyticsProduct {
+                sku: r.get("sku"),
+                name: r.get("name"),
+                qty: r.get("qty"),
+                revenue: r.get("revenue"),
+                cost: cost_p,
+                margin: format!("{margin_p:.2}"),
+                margin_pct: pct(margin_p, parse_dec(&rev_c)),
+            }
+        })
+        .collect();
+
+    let mut top_revenue = products.clone();
+    top_revenue.sort_by(|a, b| parse_dec(&b.revenue).total_cmp(&parse_dec(&a.revenue)));
+    top_revenue.truncate(10);
+    products.sort_by(|a, b| parse_dec(&b.margin).total_cmp(&parse_dec(&a.margin)));
+    products.truncate(10);
+
+    Ok(Analytics {
+        days,
+        currency: "IDR".into(),
+        totals: AnalyticsTotals {
+            orders,
+            canceled_orders: canceled,
+            cancel_rate,
+            items,
+            qty,
+            hpp_coverage,
+            revenue: revenue_s,
+            revenue_covered: revenue_covered_s,
+            cost: cost_s,
+            margin: format!("{margin:.2}"),
+            margin_pct: pct(margin, revenue_covered),
+            aov: format!("{aov:.0}"),
+        },
+        daily,
+        platforms,
+        carriers,
+        states,
+        top_revenue,
+        top_margin: products,
+    })
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CancelReportOrder {

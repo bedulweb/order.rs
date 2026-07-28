@@ -325,6 +325,78 @@ export function fetchTodayStats(): Promise<TodayStats> {
   return request("/v1/stats/today");
 }
 
+// --- Analytics dashboard ---
+
+export interface AnalyticsTotals {
+  orders: number;
+  canceledOrders: number;
+  /** Percent (0-100). */
+  cancelRate: number;
+  items: number;
+  qty: number;
+  /** Fraction (0-1) of sold qty whose HPP is known. */
+  hppCoverage: number;
+  /** Decimal strings (IDR). */
+  revenue: string;
+  revenueCovered: string;
+  cost: string;
+  margin: string;
+  /** Margin % over covered revenue. */
+  marginPct?: number;
+  aov: string;
+}
+
+export interface AnalyticsDay {
+  date: string;
+  orders: number;
+  revenue: string;
+  margin: string;
+}
+
+export interface AnalyticsPlatform {
+  platform: string;
+  orders: number;
+  canceledOrders: number;
+  items: number;
+  revenue: string;
+  cost: string;
+  margin: string;
+  marginPct?: number;
+  hppCoverage: number;
+}
+
+export interface AnalyticsProduct {
+  sku: string;
+  name?: string;
+  qty: number;
+  revenue: string;
+  cost: string;
+  margin: string;
+  marginPct?: number;
+}
+
+export interface StateCount {
+  state: string;
+  count: number;
+}
+
+export interface Analytics {
+  days: number;
+  currency: string;
+  totals: AnalyticsTotals;
+  daily: AnalyticsDay[];
+  platforms: AnalyticsPlatform[];
+  carriers: CarrierCount[];
+  states: StateCount[];
+  topRevenue: AnalyticsProduct[];
+  topMargin: AnalyticsProduct[];
+}
+
+/** Comprehensive analytics for the last `days` days. */
+export function fetchAnalytics(days: number): Promise<Analytics> {
+  return request(`/v1/analytics?days=${days}`);
+}
+
 /** One pick-list PDF for an explicit selection — no batch, no claim. */
 export async function downloadPicklistPdf(orderIds: number[]): Promise<void> {
   const token = getToken();

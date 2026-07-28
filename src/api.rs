@@ -70,6 +70,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/v1/orders/picklist-pdf", post(orders_picklist_pdf))
         .route("/v1/reports/in-cancel/daily", get(cancel_report))
         .route("/v1/stats/today", get(stats_today))
+        .route("/v1/analytics", get(analytics_overview))
         // Ops batches (pick lists)
         .route("/v1/batches/backlog", get(batches_backlog))
         .route("/v1/batches", get(batches_list).post(batches_create))
@@ -203,6 +204,29 @@ async fn stats_today(
         .await
         .map_err(ApiError::from)?;
     Ok(Json(stats))
+}
+
+#[derive(Debug, Deserialize)]
+struct AnalyticsQuery {
+    account: Option<String>,
+    /// Window length in days (default 30, clamped 1..=1100).
+    days: Option<i64>,
+}
+
+/// GET `/v1/analytics?days=N` — comprehensive dashboard: totals with gross
+/// margin (revenue − HPP), daily trend, platform comparison, carriers,
+/// states, and top products by revenue and margin.
+async fn analytics_overview(
+    State(st): State<ApiState>,
+    headers: HeaderMap,
+    Query(q): Query<AnalyticsQuery>,
+) -> std::result::Result<Json<crate::store::Analytics>, ApiError> {
+    check_auth(&st, &headers)?;
+    let account_id = resolve_account_id(&st.pool, q.account.as_deref()).await?;
+    let report = crate::store::analytics(&st.pool, account_id, q.days.unwrap_or(30))
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(report))
 }
 
 fn check_auth(st: &ApiState, headers: &HeaderMap) -> std::result::Result<(), ApiError> {
@@ -1112,6 +1136,7 @@ mod tests {
             "/v1/sync/run",
             "/v1/sync/progress",
             "/v1/stats/today",
+            "/v1/analytics",
             "/v1/orders/new",
             "/v1/orders/pack",
             "/v1/orders/picklist-pdf",

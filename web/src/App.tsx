@@ -34,6 +34,7 @@ import {
   ApiError,
   clearToken,
   createBatch,
+  fetchAnalytics,
   createBatchFromSelection,
   downloadBatchPdf,
   downloadPicklistPdf,
@@ -52,6 +53,8 @@ import {
   packOrders,
   setToken,
   startSyncRun,
+  type Analytics,
+  type AnalyticsProduct,
   type BacklogOrder,
   type BacklogResponse,
   type BatchDetail,
@@ -117,6 +120,7 @@ function AppRoutes() {
     const p = loc.pathname;
     if (p.startsWith("/order-masuk")) return "Order masuk";
     if (p.startsWith("/backlog")) return "Backlog";
+    if (p.startsWith("/analytics")) return "Analytics";
     if (p.startsWith("/products")) return "Products";
     if (p.startsWith("/batches/")) return "Batch detail";
     return "Orders Ops";
@@ -148,6 +152,7 @@ function AppRoutes() {
             </NavBtn>
             <NavBtn to="/order-masuk">Order Masuk</NavBtn>
             <NavBtn to="/backlog">Backlog</NavBtn>
+            <NavBtn to="/analytics">Analytics</NavBtn>
             <NavBtn to="/products">Products</NavBtn>
             <Button
               size="sm"
@@ -168,6 +173,7 @@ function AppRoutes() {
           <Route path="/" element={<OpsHome />} />
           <Route path="/order-masuk" element={<NewOrdersPage />} />
           <Route path="/backlog" element={<BacklogPage />} />
+          <Route path="/analytics" element={<AnalyticsPage />} />
           <Route path="/products" element={<ProductsPage />} />
           <Route path="/batches/:id" element={<BatchDetailPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
@@ -1986,6 +1992,379 @@ function BacklogPage() {
             </Table>
           </CardPanel>
         </Card>
+      )}
+    </div>
+  );
+}
+
+const ANALYTICS_PERIODS = [7, 30, 90, 365];
+
+function formatIdrCompact(v: number): string {
+  if (!Number.isFinite(v)) return "—";
+  if (v >= 1e9)
+    return `Rp ${(v / 1e9).toLocaleString("id-ID", { maximumFractionDigits: 2 })} M`;
+  if (v >= 1e6)
+    return `Rp ${(v / 1e6).toLocaleString("id-ID", { maximumFractionDigits: 1 })} jt`;
+  if (v >= 1e3)
+    return `Rp ${(v / 1e3).toLocaleString("id-ID", { maximumFractionDigits: 0 })} rb`;
+  return formatIdr(v);
+}
+
+function Kpi({
+  label,
+  value,
+  sub,
+  tone,
+}: {
+  label: string;
+  value: string | null;
+  sub?: string;
+  tone?: "good" | "bad";
+}) {
+  return (
+    <div className="px-5 py-4">
+      <p className="text-muted-foreground text-xs">{label}</p>
+      <div
+        className={cn(
+          "font-heading text-2xl font-semibold tracking-tight tabular-nums",
+          tone === "good" && "text-success-foreground",
+          tone === "bad" && "text-destructive",
+        )}
+      >
+        {value === null ? <Skeleton className="h-7 w-20" /> : value}
+      </div>
+      {sub && <p className="text-muted-foreground text-[11px]">{sub}</p>}
+    </div>
+  );
+}
+
+function AnalyticsPage() {
+  const [days, setDays] = useState(30);
+  const [data, setData] = useState<Analytics | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [topTab, setTopTab] = useState<"revenue" | "margin">("revenue");
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    fetchAnalytics(days)
+      .then((d) => {
+        if (!cancelled) setData(d);
+      })
+      .catch((err) => {
+        if (!cancelled)
+          setError(err instanceof Error ? err.message : "Failed to load");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [days]);
+
+  const t = data?.totals;
+  const maxRev = Math.max(
+    1,
+    ...(data?.daily.map((d) => parseFloat(d.revenue) || 0) ?? [1]),
+  );
+  const maxCarrier = Math.max(1, ...(data?.carriers.map((c) => c.count) ?? [1]));
+  const totalPlatformRev =
+    data?.platforms.reduce((s, p) => s + (parseFloat(p.revenue) || 0), 0) ?? 0;
+  const topProducts: AnalyticsProduct[] =
+    (topTab === "revenue" ? data?.topRevenue : data?.topMargin) ?? [];
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5">
+          {ANALYTICS_PERIODS.map((p) => (
+            <button
+              key={p}
+              type="button"
+              onClick={() => setDays(p)}
+              className={cn(
+                "inline-flex h-7 cursor-pointer items-center rounded-lg border px-2.5 text-xs font-medium transition-all duration-150 active:scale-[0.97]",
+                days === p
+                  ? "border-primary bg-primary text-primary-foreground shadow-xs"
+                  : "border-input bg-popover text-foreground hover:bg-accent/50",
+              )}
+            >
+              {p === 365 ? "1 tahun" : `${p} hari`}
+            </button>
+          ))}
+        </div>
+        <span className="text-muted-foreground text-xs">
+          Margin = omzet − HPP katalog · biaya platform belum termasuk
+        </span>
+      </div>
+
+      {error && (
+        <p className="text-destructive text-sm" role="alert">
+          {error}
+        </p>
+      )}
+
+      {/* KPI band */}
+      <Card>
+        <CardPanel className="grid grid-cols-2 gap-y-2 p-0! sm:grid-cols-3 lg:grid-cols-5 lg:divide-x">
+          <Kpi
+            label="Omzet"
+            value={t ? formatIdrCompact(parseFloat(t.revenue)) : null}
+            sub={t ? `${t.orders} order · AOV ${formatIdrCompact(parseFloat(t.aov))}` : undefined}
+          />
+          <Kpi
+            label="Margin kotor"
+            value={t ? formatIdrCompact(parseFloat(t.margin)) : null}
+            sub={t?.marginPct != null ? `${t.marginPct}% dari omzet ter-cover` : undefined}
+            tone="good"
+          />
+          <Kpi
+            label="Coverage HPP"
+            value={t ? `${Math.round(t.hppCoverage * 100)}%` : null}
+            sub="qty jual yang HPP-nya ada"
+          />
+          <Kpi
+            label="Item terjual"
+            value={t ? String(t.qty) : null}
+            sub={t ? `${t.items} baris item` : undefined}
+          />
+          <Kpi
+            label="Cancel rate"
+            value={t ? `${t.cancelRate}%` : null}
+            sub={t ? `${t.canceledOrders} order batal` : undefined}
+            tone={t && t.cancelRate >= 15 ? "bad" : undefined}
+          />
+        </CardPanel>
+      </Card>
+
+      {/* Daily trend */}
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base">Tren harian</CardTitle>
+          <CardDescription>
+            Omzet per hari (WIB)
+            {data && data.daily.length > 0
+              ? ` · ${data.daily[0].date} – ${data.daily[data.daily.length - 1].date}`
+              : ""}
+          </CardDescription>
+        </CardHeader>
+        <CardPanel>
+          {loading && !data ? (
+            <Skeleton className="h-36 w-full" />
+          ) : (
+            <div className="flex h-36 items-end gap-[3px]">
+              {data?.daily.map((d) => {
+                const v = parseFloat(d.revenue) || 0;
+                return (
+                  <div
+                    key={d.date}
+                    className="group flex h-full flex-1 items-end"
+                    title={`${d.date} · ${formatIdr(v)} · ${d.orders} order`}
+                  >
+                    <div
+                      className="w-full rounded-t-[2px] bg-primary/60 transition-colors group-hover:bg-primary"
+                      style={{
+                        height: `${Math.max(2, (v / maxRev) * 100)}%`,
+                      }}
+                    />
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </CardPanel>
+      </Card>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        {/* Platform comparison */}
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">Perbandingan platform</CardTitle>
+            <CardDescription>
+              Order · omzet · margin per marketplace
+            </CardDescription>
+          </CardHeader>
+          <CardPanel className="flex flex-col gap-3">
+            {loading && !data ? (
+              <>
+                <Skeleton className="h-8 w-full" />
+                <Skeleton className="h-8 w-full" />
+              </>
+            ) : (
+              data?.platforms.map((p) => {
+                const rev = parseFloat(p.revenue) || 0;
+                const share =
+                  totalPlatformRev > 0 ? (rev / totalPlatformRev) * 100 : 0;
+                return (
+                  <div key={p.platform} className="flex flex-col gap-1.5">
+                    <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-0.5 text-sm">
+                      <span className="w-16 font-medium capitalize">
+                        {p.platform}
+                      </span>
+                      <span className="font-medium tabular-nums">
+                        {formatIdrCompact(rev)}
+                      </span>
+                      <span className="text-muted-foreground text-xs tabular-nums">
+                        {p.orders} order
+                      </span>
+                      <span className="text-success-foreground text-xs tabular-nums">
+                        margin {formatIdrCompact(parseFloat(p.margin))}
+                        {p.marginPct != null ? ` (${p.marginPct}%)` : ""}
+                      </span>
+                      <span className="text-muted-foreground text-xs">
+                        HPP {Math.round(p.hppCoverage * 100)}% · batal{" "}
+                        {p.canceledOrders}
+                      </span>
+                    </div>
+                    <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+                      <div
+                        className="h-full rounded-full bg-primary/70"
+                        style={{ width: `${Math.max(2, share)}%` }}
+                      />
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </CardPanel>
+        </Card>
+
+        {/* Carriers */}
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">Ekspedisi</CardTitle>
+            <CardDescription>Jumlah order per kurir</CardDescription>
+          </CardHeader>
+          <CardPanel className="flex flex-col gap-1.5">
+            {loading && !data ? (
+              <>
+                <Skeleton className="h-4 w-full" />
+                <Skeleton className="h-4 w-4/5" />
+                <Skeleton className="h-4 w-3/5" />
+              </>
+            ) : (
+              data?.carriers.slice(0, 10).map((c) => (
+                <div key={c.carrier} className="flex items-center gap-2.5 text-sm">
+                  <span
+                    className="w-28 shrink-0 truncate text-muted-foreground"
+                    title={c.carrier}
+                  >
+                    {c.carrier}
+                  </span>
+                  <div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-muted">
+                    <div
+                      className="h-full rounded-full bg-primary/70"
+                      style={{
+                        width: `${Math.max(3, (c.count / maxCarrier) * 100)}%`,
+                      }}
+                    />
+                  </div>
+                  <span className="w-10 shrink-0 text-right font-medium tabular-nums">
+                    {c.count}
+                  </span>
+                </div>
+              ))
+            )}
+          </CardPanel>
+        </Card>
+      </div>
+
+      {/* Top products */}
+      <Card>
+        <CardHeader className="pb-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <CardTitle className="text-base">Top produk</CardTitle>
+              <CardDescription>
+                10 teratas menurut {topTab === "revenue" ? "omzet" : "margin"}
+              </CardDescription>
+            </div>
+            <div className="flex gap-1.5">
+              {(["revenue", "margin"] as const).map((tab) => (
+                <button
+                  key={tab}
+                  type="button"
+                  onClick={() => setTopTab(tab)}
+                  className={cn(
+                    "inline-flex h-7 cursor-pointer items-center rounded-lg border px-2.5 text-xs font-medium transition-all duration-150 active:scale-[0.97]",
+                    topTab === tab
+                      ? "border-primary bg-primary text-primary-foreground shadow-xs"
+                      : "border-input bg-popover text-foreground hover:bg-accent/50",
+                  )}
+                >
+                  {tab === "revenue" ? "Omzet" : "Margin"}
+                </button>
+              ))}
+            </div>
+          </div>
+        </CardHeader>
+        <CardPanel className="p-0!">
+          {loading && !data ? (
+            <div className="flex flex-col gap-2 p-4">
+              <Skeleton className="h-8 w-full" />
+              <Skeleton className="h-8 w-full" />
+              <Skeleton className="h-8 w-full" />
+            </div>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-8">#</TableHead>
+                  <TableHead>SKU</TableHead>
+                  <TableHead>Produk</TableHead>
+                  <TableHead className="text-right">Qty</TableHead>
+                  <TableHead className="text-right">Omzet</TableHead>
+                  <TableHead className="text-right">Margin</TableHead>
+                  <TableHead className="text-right">%</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {topProducts.map((p, i) => (
+                  <TableRow key={p.sku}>
+                    <TableCell className="text-muted-foreground tabular-nums">
+                      {i + 1}
+                    </TableCell>
+                    <TableCell className="font-mono text-xs">{p.sku}</TableCell>
+                    <TableCell
+                      className="max-w-[260px] truncate text-muted-foreground"
+                      title={p.name ?? undefined}
+                    >
+                      {p.name ?? "—"}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {p.qty}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {formatIdr(parseFloat(p.revenue))}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {formatIdr(parseFloat(p.margin))}
+                    </TableCell>
+                    <TableCell className="text-muted-foreground text-right tabular-nums">
+                      {p.marginPct != null ? `${p.marginPct}%` : "—"}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </CardPanel>
+      </Card>
+
+      {/* State funnel */}
+      {data && data.states.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-muted-foreground text-xs">State order:</span>
+          {data.states.map((s) => (
+            <Badge key={s.state} variant="outline" className="capitalize">
+              {s.state}
+              <span className="tabular-nums">{s.count}</span>
+            </Badge>
+          ))}
+        </div>
       )}
     </div>
   );
