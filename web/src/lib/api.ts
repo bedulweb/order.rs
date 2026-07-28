@@ -292,6 +292,39 @@ export function fetchSyncProgress(): Promise<SyncProgress> {
   return request("/v1/sync/progress");
 }
 
+// --- Today stats (ops home dashboard) ---
+
+export interface CarrierCount {
+  carrier: string;
+  count: number;
+}
+
+export interface TopProduct {
+  sku: string;
+  name?: string;
+  qty: number;
+}
+
+export interface PlatformCount {
+  platform: string;
+  count: number;
+}
+
+export interface TodayStats {
+  /** WIB calendar date YYYY-MM-DD. */
+  date: string;
+  totalOrders: number;
+  totalItems: number;
+  platforms: PlatformCount[];
+  carriers: CarrierCount[];
+  topProducts: TopProduct[];
+}
+
+/** Today's (WIB) order volume per carrier + busiest products. */
+export function fetchTodayStats(): Promise<TodayStats> {
+  return request("/v1/stats/today");
+}
+
 /** One pick-list PDF for an explicit selection — no batch, no claim. */
 export async function downloadPicklistPdf(orderIds: number[]): Promise<void> {
   const token = getToken();

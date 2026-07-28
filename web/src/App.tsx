@@ -44,6 +44,7 @@ import {
   fetchCatalogProducts,
   fetchOrdersFeed,
   fetchSyncProgress,
+  fetchTodayStats,
   formatIdr,
   formatWib,
   getToken,
@@ -66,6 +67,7 @@ import {
   type SelectionBatchResult,
   type SyncProgress,
   type SyncStepState,
+  type TodayStats,
 } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -274,6 +276,7 @@ function OpsHome() {
   const navigate = useNavigate();
   const [backlog, setBacklog] = useState<BacklogResponse | null>(null);
   const [batches, setBatches] = useState<BatchesListResponse | null>(null);
+  const [stats, setStats] = useState<TodayStats | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [pendingSession, setPendingSession] = useState<BatchSession | null>(
@@ -286,9 +289,14 @@ function OpsHome() {
     setLoading(true);
     setError(null);
     try {
-      const [b, list] = await Promise.all([fetchBacklog(), fetchBatchesToday()]);
+      const [b, list, s] = await Promise.all([
+        fetchBacklog(),
+        fetchBatchesToday(),
+        fetchTodayStats(),
+      ]);
       setBacklog(b);
       setBatches(list);
+      setStats(s);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load");
     } finally {
@@ -331,8 +339,17 @@ function OpsHome() {
   const backlogEmpty = !loading && (backlog?.total ?? 0) === 0;
   const urgentEmpty = !loading && (backlog?.urgentCount ?? 0) === 0;
 
+  const statsDateLabel = useMemo(() => {
+    if (!stats) return null;
+    return new Date(`${stats.date}T00:00:00+07:00`).toLocaleDateString(
+      "id-ID",
+      { weekday: "long", day: "numeric", month: "short" },
+    );
+  }, [stats]);
+  const maxCarrier = Math.max(1, ...(stats?.carriers.map((c) => c.count) ?? [1]));
+
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-end gap-3">
         <Button variant="outline" size="sm" onClick={() => void load()}>
           Refresh
@@ -349,33 +366,6 @@ function OpsHome() {
           {error}
         </div>
       )}
-
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        <StatCard
-          title="Backlog"
-          value={loading ? null : String(backlog?.total ?? 0)}
-          hint="state=new, not in active batch"
-          action={
-            <Button
-              size="sm"
-              variant="outline"
-              render={<Link to="/backlog" />}
-            >
-              View table
-            </Button>
-          }
-        />
-        <StatCard
-          title="Urgent in backlog"
-          value={loading ? null : String(backlog?.urgentCount ?? 0)}
-          hint="instant / sameday / gojek / grab / …"
-        />
-        <StatCard
-          title="Today’s batches"
-          value={loading ? null : String(batches?.batches.length ?? 0)}
-          hint={batches ? `WIB day ${batches.date}` : "Asia/Jakarta"}
-        />
-      </div>
 
       <Card>
         <CardHeader>
@@ -442,6 +432,168 @@ function OpsHome() {
         </CardPanel>
       </Card>
 
+      {/* Backlog / urgent / batch — strip compact */}
+      <Card>
+        <CardPanel className="grid grid-cols-3 divide-x p-0!">
+          <Link
+            to="/backlog"
+            className="no-underline px-5 py-3.5 transition-colors hover:bg-accent/40"
+          >
+            <p className="text-muted-foreground text-xs">Backlog</p>
+            <p className="font-heading text-2xl font-semibold tabular-nums">
+              {loading && !backlog ? (
+                <Skeleton className="h-7 w-10" />
+              ) : (
+                backlog?.total ?? 0
+              )}
+            </p>
+            <p className="text-muted-foreground text-[11px]">
+              new · belum masuk batch
+            </p>
+          </Link>
+          <div className="px-5 py-3.5">
+            <p className="text-muted-foreground text-xs">Urgent</p>
+            <p className="font-heading text-2xl font-semibold tabular-nums">
+              {loading && !backlog ? (
+                <Skeleton className="h-7 w-10" />
+              ) : (
+                backlog?.urgentCount ?? 0
+              )}
+            </p>
+            <p className="text-muted-foreground text-[11px]">
+              instant · sameday · gojek
+            </p>
+          </div>
+          <div className="px-5 py-3.5">
+            <p className="text-muted-foreground text-xs">Batch hari ini</p>
+            <p className="font-heading text-2xl font-semibold tabular-nums">
+              {loading && !batches ? (
+                <Skeleton className="h-7 w-10" />
+              ) : (
+                batches?.batches.length ?? 0
+              )}
+            </p>
+            <p className="text-muted-foreground text-[11px]">
+              {batches ? `WIB ${batches.date}` : "Asia/Jakarta"}
+            </p>
+          </div>
+        </CardPanel>
+      </Card>
+
+      {/* Hari ini — volume, platform, ekspedisi, top produk */}
+      <Card>
+        <CardHeader className="pb-3">
+          <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+            <CardTitle className="text-base">Hari ini</CardTitle>
+            <CardDescription className="capitalize">
+              {statsDateLabel ?? "…"} · WIB
+            </CardDescription>
+          </div>
+          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1.5 pt-1.5">
+            {loading && !stats ? (
+              <Skeleton className="h-10 w-20" />
+            ) : (
+              <span className="font-heading text-4xl font-semibold tracking-tight tabular-nums">
+                {stats?.totalOrders ?? 0}
+              </span>
+            )}
+            <span className="text-muted-foreground text-sm">
+              order · {stats?.totalItems ?? 0} item
+            </span>
+            {stats?.platforms.map((p) => (
+              <span
+                key={p.platform}
+                className="inline-flex items-center gap-1.5 rounded-md border border-input bg-popover px-2 py-0.5 text-xs font-medium capitalize"
+              >
+                {p.platform}
+                <span className="text-muted-foreground tabular-nums">
+                  {p.count}
+                </span>
+              </span>
+            ))}
+          </div>
+        </CardHeader>
+        <CardPanel className="grid gap-x-8 gap-y-5 lg:grid-cols-2">
+          <div className="flex min-w-0 flex-col gap-1.5">
+            <p className="text-muted-foreground text-xs font-medium tracking-wide uppercase">
+              Ekspedisi
+            </p>
+            {loading && !stats ? (
+              <>
+                <Skeleton className="h-4 w-full" />
+                <Skeleton className="h-4 w-4/5" />
+                <Skeleton className="h-4 w-3/5" />
+              </>
+            ) : !stats?.carriers.length ? (
+              <p className="text-muted-foreground text-sm">
+                Belum ada order hari ini.
+              </p>
+            ) : (
+              stats.carriers.map((c) => (
+                <div key={c.carrier} className="flex items-center gap-2.5 text-sm">
+                  <span
+                    className="w-24 shrink-0 truncate text-muted-foreground"
+                    title={c.carrier}
+                  >
+                    {c.carrier}
+                  </span>
+                  <div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-muted">
+                    <div
+                      className="h-full rounded-full bg-primary/70 transition-[width] duration-500"
+                      style={{
+                        width: `${Math.max(4, (c.count / maxCarrier) * 100)}%`,
+                      }}
+                    />
+                  </div>
+                  <span className="w-8 shrink-0 text-right font-medium tabular-nums">
+                    {c.count}
+                  </span>
+                </div>
+              ))
+            )}
+          </div>
+          <div className="flex min-w-0 flex-col gap-1.5">
+            <p className="text-muted-foreground text-xs font-medium tracking-wide uppercase">
+              Top produk
+            </p>
+            {loading && !stats ? (
+              <>
+                <Skeleton className="h-4 w-full" />
+                <Skeleton className="h-4 w-5/6" />
+                <Skeleton className="h-4 w-2/3" />
+              </>
+            ) : !stats?.topProducts.length ? (
+              <p className="text-muted-foreground text-sm">
+                Belum ada item terjual hari ini.
+              </p>
+            ) : (
+              stats.topProducts.map((p, i) => (
+                <div key={p.sku} className="flex items-center gap-2.5 text-sm">
+                  <span className="w-4 shrink-0 text-right text-muted-foreground text-xs tabular-nums">
+                    {i + 1}
+                  </span>
+                  <span
+                    className="w-28 shrink-0 truncate font-mono text-xs"
+                    title={p.sku}
+                  >
+                    {p.sku}
+                  </span>
+                  <span
+                    className="min-w-0 flex-1 truncate text-muted-foreground"
+                    title={p.name ?? undefined}
+                  >
+                    {p.name}
+                  </span>
+                  <span className="shrink-0 font-medium tabular-nums">
+                    ×{p.qty}
+                  </span>
+                </div>
+              ))
+            )}
+          </div>
+        </CardPanel>
+      </Card>
+
       <Dialog
         open={pendingSession !== null}
         onOpenChange={(open) => {
@@ -470,33 +622,6 @@ function OpsHome() {
         </DialogPopup>
       </Dialog>
     </div>
-  );
-}
-
-function StatCard({
-  title,
-  value,
-  hint,
-  action,
-}: {
-  title: string;
-  value: string | null;
-  hint: string;
-  action?: React.ReactNode;
-}) {
-  return (
-    <Card>
-      <CardHeader className="pb-2">
-        <CardDescription>{title}</CardDescription>
-        <CardTitle className="text-3xl tabular-nums">
-          {value === null ? <Skeleton className="h-9 w-16" /> : value}
-        </CardTitle>
-      </CardHeader>
-      <CardPanel className="flex items-center justify-between gap-2">
-        <p className="text-muted-foreground text-xs">{hint}</p>
-        {action}
-      </CardPanel>
-    </Card>
   );
 }
 

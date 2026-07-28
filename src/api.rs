@@ -69,6 +69,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/v1/orders/pack", post(orders_pack))
         .route("/v1/orders/picklist-pdf", post(orders_picklist_pdf))
         .route("/v1/reports/in-cancel/daily", get(cancel_report))
+        .route("/v1/stats/today", get(stats_today))
         // Ops batches (pick lists)
         .route("/v1/batches/backlog", get(batches_backlog))
         .route("/v1/batches", get(batches_list).post(batches_create))
@@ -182,6 +183,26 @@ async fn sync_progress_snapshot(
 ) -> std::result::Result<Json<crate::ondemand::SyncProgress>, ApiError> {
     check_auth(&st, &headers)?;
     Ok(Json(st.sync_progress.lock().await.clone()))
+}
+
+#[derive(Debug, Deserialize)]
+struct StatsQuery {
+    account: Option<String>,
+}
+
+/// GET `/v1/stats/today` — ops home dashboard: today's (WIB) order volume
+/// per carrier and the busiest products.
+async fn stats_today(
+    State(st): State<ApiState>,
+    headers: HeaderMap,
+    Query(q): Query<StatsQuery>,
+) -> std::result::Result<Json<crate::store::TodayStats>, ApiError> {
+    check_auth(&st, &headers)?;
+    let account_id = resolve_account_id(&st.pool, q.account.as_deref()).await?;
+    let stats = crate::store::today_stats(&st.pool, account_id)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(stats))
 }
 
 fn check_auth(st: &ApiState, headers: &HeaderMap) -> std::result::Result<(), ApiError> {
@@ -1090,6 +1111,7 @@ mod tests {
         for path in [
             "/v1/sync/run",
             "/v1/sync/progress",
+            "/v1/stats/today",
             "/v1/orders/new",
             "/v1/orders/pack",
             "/v1/orders/picklist-pdf",

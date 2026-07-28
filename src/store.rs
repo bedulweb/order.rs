@@ -968,6 +968,174 @@ async fn load_new_order_items(
     Ok(map)
 }
 
+// ---------------------------------------------------------------------------
+// Today stats (ops home dashboard)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CarrierCount {
+    pub carrier: String,
+    pub count: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TopProduct {
+    pub sku: String,
+    pub name: Option<String>,
+    pub qty: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlatformCount {
+    pub platform: String,
+    pub count: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TodayStats {
+    /// WIB calendar date (YYYY-MM-DD).
+    pub date: String,
+    pub total_orders: i64,
+    pub total_items: i64,
+    /// Orders per marketplace (shopee / tiktok / …), most frequent first.
+    pub platforms: Vec<PlatformCount>,
+    /// Orders per display carrier, most frequent first.
+    pub carriers: Vec<CarrierCount>,
+    /// Top products by item quantity across today's orders.
+    pub top_products: Vec<TopProduct>,
+}
+
+/// Orders placed today (WIB day), excluding canceled/archived, broken down
+/// per carrier plus the busiest products.
+pub async fn today_stats(pool: &PgPool, account_id: Option<i64>) -> Result<TodayStats> {
+    // Start of the current WIB day as timestamptz (WIB = UTC+7, no DST).
+    let wib = chrono::FixedOffset::east_opt(crate::batch::WIB_OFFSET_SECS)
+        .expect("WIB offset is valid");
+    let now_wib = chrono::Utc::now().with_timezone(&wib);
+    let day = now_wib.date_naive();
+    let start = day
+        .and_hms_opt(0, 0, 0)
+        .expect("valid midnight")
+        .and_local_timezone(wib)
+        .unwrap();
+
+    const ORDER_FILTER: &str = "o.ordered_at >= $1
+          AND o.state NOT IN ('canceled', 'cancelled', 'archived')
+          AND ($2::bigint IS NULL OR o.account_id = $2)";
+
+    let carrier_rows = sqlx::query(&format!(
+        r#"
+        SELECT
+            COALESCE(
+                NULLIF(BTRIM(o.buyer_shipping_carrier), ''),
+                NULLIF(BTRIM(o.shipment_provider), ''),
+                NULLIF(BTRIM(o.shipping_carrier_name), ''),
+                'Lainnya'
+            ) AS carrier,
+            COUNT(*)::bigint AS count
+        FROM orders o
+        WHERE {ORDER_FILTER}
+        GROUP BY 1
+        ORDER BY 2 DESC, 1 ASC
+        "#
+    ))
+    .bind(start)
+    .bind(account_id)
+    .fetch_all(pool)
+    .await?;
+
+    let carriers: Vec<CarrierCount> = carrier_rows
+        .iter()
+        .map(|r| CarrierCount {
+            carrier: r.get("carrier"),
+            count: r.get("count"),
+        })
+        .collect();
+    let total_orders: i64 = carriers.iter().map(|c| c.count).sum();
+
+    let platform_rows = sqlx::query(&format!(
+        r#"
+        SELECT
+            COALESCE(NULLIF(BTRIM(o.platform), ''), 'lainnya') AS platform,
+            COUNT(*)::bigint AS count
+        FROM orders o
+        WHERE {ORDER_FILTER}
+        GROUP BY 1
+        ORDER BY 2 DESC, 1 ASC
+        "#
+    ))
+    .bind(start)
+    .bind(account_id)
+    .fetch_all(pool)
+    .await?;
+
+    let platforms: Vec<PlatformCount> = platform_rows
+        .iter()
+        .map(|r| PlatformCount {
+            platform: r.get("platform"),
+            count: r.get("count"),
+        })
+        .collect();
+
+    let item_rows = sqlx::query(&format!(
+        r#"
+        SELECT
+            COALESCE(NULLIF(BTRIM(oi.sku), ''), oi.item_name, 'Tanpa SKU') AS sku,
+            COALESCE(MAX(oi.item_name), MAX(NULLIF(pc.name, ''))) AS name,
+            COALESCE(SUM(oi.quantity), 0)::bigint AS qty
+        FROM order_items oi
+        JOIN orders o ON o.id = oi.order_id
+        LEFT JOIN product_catalog pc ON pc.art = BTRIM(oi.sku)
+        WHERE {ORDER_FILTER}
+          AND oi.is_addition IS NOT TRUE
+        GROUP BY 1
+        ORDER BY 3 DESC, 1 ASC
+        LIMIT 8
+        "#
+    ))
+    .bind(start)
+    .bind(account_id)
+    .fetch_all(pool)
+    .await?;
+
+    let top_products: Vec<TopProduct> = item_rows
+        .iter()
+        .map(|r| TopProduct {
+            sku: r.get("sku"),
+            name: r.get("name"),
+            qty: r.get("qty"),
+        })
+        .collect();
+
+    let total_items: i64 = sqlx::query(&format!(
+        r#"
+        SELECT COALESCE(SUM(oi.quantity), 0)::bigint AS qty
+        FROM order_items oi
+        JOIN orders o ON o.id = oi.order_id
+        WHERE {ORDER_FILTER}
+          AND oi.is_addition IS NOT TRUE
+        "#
+    ))
+    .bind(start)
+    .bind(account_id)
+    .fetch_one(pool)
+    .await?
+    .get("qty");
+
+    Ok(TodayStats {
+        date: day.to_string(),
+        total_orders,
+        total_items,
+        platforms,
+        carriers,
+        top_products,
+    })
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CancelReportOrder {
