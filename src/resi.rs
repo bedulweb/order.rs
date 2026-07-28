@@ -79,7 +79,7 @@ pub async fn prepare_resi_print(
         )
         .await?;
     let data = check.get("data").cloned().unwrap_or_default();
-    let labels = data
+    let labels: Vec<ResiLabel> = data
         .get("printedListMap")
         .and_then(|v| v.as_array())
         .map(|arr| {
@@ -110,7 +110,7 @@ pub async fn prepare_resi_print(
                 .collect()
         })
         .unwrap_or_default();
-    let not_printable = data
+    let not_printable: Vec<i64> = data
         .get("noPrintOrders")
         .and_then(|v| v.as_array())
         .map(|arr| arr.iter().filter_map(|v| v.as_i64()).collect())
@@ -140,6 +140,12 @@ pub async fn prepare_resi_print(
             "BigSeller tidak mengembalikan print uid (getPuidNew) — cek sesi login".into(),
         ));
     }
+    tracing::info!(
+        requested = order_ids.len(),
+        labels = labels.len(),
+        not_printable = not_printable.len(),
+        "resi print prepared (labels buffered in BigSeller)"
+    );
 
     Ok(ResiPrep {
         encrypt_id,
