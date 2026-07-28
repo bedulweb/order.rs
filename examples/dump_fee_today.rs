@@ -13,7 +13,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         SELECT id, platform, amount::text AS amount, state,
                payload->'feeDetail' AS fee
         FROM orders
-        WHERE coalesce(ordered_at, first_seen_at) >= (timezone('Asia/Jakarta', now()))::date AT TIME ZONE 'Asia/Jakarta'
+        WHERE coalesce(ordered_at, first_seen_at) >= ((timezone('Asia/Jakarta', now()))::date)::timestamp AT TIME ZONE 'Asia/Jakarta'
           AND coalesce(ordered_at, first_seen_at) < ((timezone('Asia/Jakarta', now()))::date + 1) AT TIME ZONE 'Asia/Jakarta'
           AND lower(coalesce(state,'')) NOT IN ('canceled','cancelled')
         ORDER BY coalesce(ordered_at, first_seen_at)
