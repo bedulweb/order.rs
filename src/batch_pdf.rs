@@ -31,8 +31,8 @@ const QTY_COL_W: f32 = 16.0;
 const THUMB_MM: f32 = 18.0;
 const THUMB_GAP: f32 = 3.5;
 const THUMB_PAD_MM: f32 = 0.6;
-const GAP_AFTER_DIV: f32 = 3.2;
-const GAP_BEFORE_DIV: f32 = 2.8;
+const GAP_AFTER_DIV: f32 = 1.2;
+const GAP_BEFORE_DIV: f32 = 1.0;
 const THUMB_FETCH_CONCURRENCY: usize = 12;
 const THUMB_TIMEOUT: Duration = Duration::from_secs(8);
 const THUMB_PX: u32 = 144;
@@ -470,8 +470,8 @@ pub async fn render_batch_pdf(
         let pkg_lines = wrap_parts(&pkg_parts, 7.5, max_name_w);
         let n_pkg = pkg_lines.len();
 
-        let text_h = 3.6 + 3.8 + (n_pkg as f32 * 3.2) + GAP_BEFORE_DIV;
-        let content_h = text_h.max(THUMB_MM + 1.0);
+        let text_h = 3.2 + 3.8 + (n_pkg as f32 * 3.2) + GAP_BEFORE_DIV;
+        let content_h = text_h.max(THUMB_MM + 0.5);
         let row_h = content_h + GAP_AFTER_DIV;
 
         if pages.last().unwrap().y - row_h < CONTENT_BOTTOM {
@@ -489,7 +489,7 @@ pub async fn render_batch_pdf(
         let layer = layer_of(&doc, st);
         let row_top = st.y;
         let img_bottom = row_top - THUMB_MM;
-        let name_y = row_top - 2.5;
+        let name_y = row_top - 1.8;
 
         // thumb (plate + photo; pale products need the plate or they vanish on white paper)
         let mut drew_img = false;
@@ -503,16 +503,16 @@ pub async fn render_batch_pdf(
             draw_thumb_placeholder(&layer, MARGIN, img_bottom);
         }
 
-        // name + qty
+        // name + qty (qty 2x besar, baseline diturunkan agar pas di baris)
         let name = trunc_to_width(&row.name, 9.0, true, max_name_w);
         text_at(&layer, &font_bold, &name, 9.0, tx, name_y);
         text_right(
             &layer,
             &font_bold,
             &row.qty.to_string(),
-            11.0,
+            22.0,
             PAGE_W - MARGIN,
-            name_y,
+            row_top - 4.5,
             true,
         );
 
@@ -539,7 +539,7 @@ pub async fn render_batch_pdf(
             y_text += 3.2;
         }
 
-        let content_bottom = y_text.min(img_bottom) - 1.5;
+        let content_bottom = y_text.min(img_bottom) - 0.5;
         let div_y = content_bottom - GAP_BEFORE_DIV;
         hline(&layer, MARGIN, PAGE_W - MARGIN, div_y, 0.88);
         st.y = div_y - GAP_AFTER_DIV;
