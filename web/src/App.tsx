@@ -50,6 +50,7 @@ import {
   formatWib,
   getToken,
   importCatalog,
+  confirmResiPrint,
   packOrders,
   prepareResiPrint,
   setToken,
@@ -1195,6 +1196,8 @@ function NewOrdersPage() {
   interface ResiPrintState {
     phase: ResiPhase;
     prep: ResiPrep | null;
+    orderIds: number[];
+    confirmed: boolean;
     printers: string[];
     printer: string | null;
     log: string[];
@@ -1209,6 +1212,8 @@ function NewOrdersPage() {
     setResiPrint({
       phase: "preparing",
       prep: null,
+      orderIds: ids,
+      confirmed: false,
       printers: [],
       printer: null,
       log: [],
@@ -1319,6 +1324,37 @@ function NewOrdersPage() {
               // to whatever its current default is (e.g. Adobe PDF).
               if (p.printer) {
                 ws.send(JSON.stringify({ method: "changePrinter", params: [p.printer] }));
+              }
+              // The plugin is connected: register the print job
+              // (confirmLabelPrint) so BigSeller hands it the buffered
+              // labels. This is the step the live web app performs on its
+              // print page — without it the plugin idles forever.
+              if (!p.confirmed && p.orderIds.length > 0) {
+                void confirmResiPrint(p.orderIds)
+                  .then(() => {
+                    setResiPrint(
+                      (q) =>
+                        q && {
+                          ...q,
+                          confirmed: true,
+                          log: [...q.log, "Print job terdaftar — plugin mengambil label…"],
+                        },
+                    );
+                  })
+                  .catch((err) => {
+                    setResiPrint(
+                      (q) =>
+                        q && {
+                          ...q,
+                          confirmed: true,
+                          log: [
+                            ...q.log,
+                            "Gagal mendaftar print job: " +
+                              (err instanceof Error ? err.message : String(err)),
+                          ],
+                        },
+                    );
+                  });
               }
               return {
                 ...p,

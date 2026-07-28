@@ -427,6 +427,15 @@ export function prepareResiPrint(orderIds: number[]): Promise<ResiPrep> {
   });
 }
 
+/** Register the buffered labels as a print job (confirmLabelPrint) — the
+ *  connected plugin picks them up and prints. */
+export function confirmResiPrint(orderIds: number[]): Promise<unknown> {
+  return request("/v1/orders/resi-confirm", {
+    method: "POST",
+    body: JSON.stringify({ orderIds }),
+  });
+}
+
 /** One pick-list PDF for an explicit selection — no batch, no claim. */
 export async function downloadPicklistPdf(orderIds: number[]): Promise<void> {
   const token = getToken();
