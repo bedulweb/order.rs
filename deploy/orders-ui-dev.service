@@ -1,0 +1,18 @@
+[Unit]
+Description=orders UI Vite dev server (HMR + react-grab) on 127.0.0.1:5173
+After=network-online.target orders-api.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ujang
+Group=ujang
+WorkingDirectory=/home/ujang/projects/apps/orders/web
+Environment=PATH=/home/ujang/.nvm/versions/node/v24.18.0/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/ujang/.nvm/versions/node/v24.18.0/bin/npm run dev
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
