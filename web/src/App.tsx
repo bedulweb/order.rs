@@ -1195,6 +1195,7 @@ function NewOrdersPage() {
   interface ResiPrintState {
     phase: ResiPhase;
     prep: ResiPrep | null;
+    printers: string[];
     printer: string | null;
     log: string[];
     error: string | null;
@@ -1205,7 +1206,14 @@ function NewOrdersPage() {
   function startResiPrint() {
     const ids = [...selectedOrders.keys()];
     if (ids.length === 0) return;
-    setResiPrint({ phase: "preparing", prep: null, printer: null, log: [], error: null });
+    setResiPrint({
+      phase: "preparing",
+      prep: null,
+      printers: [],
+      printer: null,
+      log: [],
+      error: null,
+    });
     void (async () => {
       let prep: ResiPrep;
       try {
@@ -1291,27 +1299,38 @@ function NewOrdersPage() {
           switch (msg.method) {
             case "getPrinter": {
               // SDK handshake order: printer list -> setPuid (who am I) ->
-              // getVersion; after the version response the plugin pulls the
-              // labels buffered by checkPrintInfo and prints them.
+              // getVersion -> changePrinter (which printer); after that the
+              // plugin pulls the labels buffered by checkPrintInfo and prints.
               const printers = Array.isArray(msg.data) ? (msg.data as string[]) : [];
               const printer =
-                (typeof msg.message === "string" && msg.message) || printers[0] || "(belum dipilih)";
+                (typeof msg.message === "string" && msg.message) || printers[0] || null;
               if (p.prep) {
                 ws.send(JSON.stringify({ method: "setPuid", params: [p.prep.encryptId, p.prep.uid] }));
               } else {
                 ws.send(JSON.stringify({ method: "getVersion" }));
               }
-              return { ...p, printer, log };
+              return { ...p, printers, printer, log };
             }
             case "setPuid":
               ws.send(JSON.stringify({ method: "getVersion" }));
               return { ...p, log };
-            case "getVersion":
+            case "getVersion": {
+              // Confirm the target printer — without this the plugin prints
+              // to whatever its current default is (e.g. Adobe PDF).
+              if (p.printer) {
+                ws.send(JSON.stringify({ method: "changePrinter", params: [p.printer] }));
+              }
               return {
                 ...p,
                 phase: "printing",
-                log: [...log, `Plugin v${detail} — mengambil label dari BigSeller & mencetak…`],
+                log: [
+                  ...log,
+                  `Plugin v${detail} — printer "${p.printer ?? "?"}" — mengambil label & mencetak…`,
+                ],
               };
+            }
+            case "changePrinterResponse":
+              return { ...p, log: [...log, "Printer dikonfirmasi plugin"] };
             case "printProcess":
               return { ...p, log: [...log, "progress: " + JSON.stringify(msg.data).slice(0, 140)] };
             default:
@@ -2022,10 +2041,31 @@ function NewOrdersPage() {
                     "Plugin sedang mengambil label & mencetak resi…"}
                 </div>
               )}
-              {resiPrint.printer && (
-                <p className="text-muted-foreground text-xs">
-                  Printer: <span className="text-foreground">{resiPrint.printer}</span>
-                </p>
+              {resiPrint.printers.length > 0 && (
+                <label className="flex items-center gap-2 text-muted-foreground text-xs">
+                  Printer:
+                  <select
+                    className="h-8 rounded-lg border border-input bg-popover px-2 text-foreground text-sm"
+                    value={resiPrint.printer ?? ""}
+                    onChange={(e) => {
+                      const name = e.target.value;
+                      setResiPrint((p) => p && { ...p, printer: name });
+                      try {
+                        resiWsRef.current?.send(
+                          JSON.stringify({ method: "changePrinter", params: [name] }),
+                        );
+                      } catch {
+                        /* socket closed */
+                      }
+                    }}
+                  >
+                    {resiPrint.printers.map((pr) => (
+                      <option key={pr} value={pr}>
+                        {pr}
+                      </option>
+                    ))}
+                  </select>
+                </label>
               )}
               {resiPrint.prep && resiPrint.prep.notPrintable.length > 0 && (
                 <p className="text-muted-foreground text-xs">
