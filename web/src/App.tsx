@@ -51,6 +51,7 @@ import {
   getToken,
   importCatalog,
   packOrders,
+  prepareResiPrint,
   setToken,
   startSyncRun,
   type Analytics,
@@ -67,6 +68,7 @@ import {
   type NewOrderItem,
   type OrdersFeedResponse,
   type PackResult,
+  type ResiPrep,
   type SelectionBatchResult,
   type SyncProgress,
   type SyncStepState,
@@ -1180,10 +1182,151 @@ function NewOrdersPage() {
   }
 
   // --- Print resi (shipping labels) via BigSeller, grouped per marketplace
-  // --- + carrier (BigSeller only bulk-prints within one carrier).
+  // --- + carrier (fallback: manual copy per group).
   const [resiOpen, setResiOpen] = useState(false);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [pdfBusy, setPdfBusy] = useState(false);
+
+  // --- Bulk print resi through the BigSeller print plugin. The backend
+  // --- buffers labels in BigSeller (checkPrintInfo) and hands us the puid;
+  // --- the browser then drives the local plugin over ws://localhost:21319
+  // --- (setPuid → the plugin pulls the labels and prints them itself).
+  type ResiPhase = "preparing" | "connecting" | "handshake" | "printing" | "error";
+  interface ResiPrintState {
+    phase: ResiPhase;
+    prep: ResiPrep | null;
+    printer: string | null;
+    log: string[];
+    error: string | null;
+  }
+  const [resiPrint, setResiPrint] = useState<ResiPrintState | null>(null);
+  const resiWsRef = useRef<WebSocket | null>(null);
+
+  function startResiPrint() {
+    const ids = [...selectedOrders.keys()];
+    if (ids.length === 0) return;
+    setResiPrint({ phase: "preparing", prep: null, printer: null, log: [], error: null });
+    void (async () => {
+      let prep: ResiPrep;
+      try {
+        prep = await prepareResiPrint(ids);
+      } catch (err) {
+        setResiPrint(
+          (p) =>
+            p && {
+              ...p,
+              phase: "error",
+              error: err instanceof Error ? err.message : "Gagal menyiapkan print resi",
+            },
+        );
+        return;
+      }
+      setResiPrint((p) => p && { ...p, phase: "connecting", prep });
+      let ws: WebSocket;
+      try {
+        ws = new WebSocket("ws://localhost:21319");
+      } catch {
+        setResiPrint(
+          (p) => p && { ...p, phase: "error", error: "Plugin BigSeller tidak terdeteksi." },
+        );
+        return;
+      }
+      resiWsRef.current = ws;
+      const failTimer = window.setTimeout(() => {
+        setResiPrint(
+          (p) =>
+            p && (p.phase === "connecting" || p.phase === "handshake")
+              ? {
+                  ...p,
+                  phase: "error",
+                  error:
+                    "Tidak terhubung ke plugin BigSeller (ws://localhost:21319). Pastikan BigSeller Print Plugin berjalan di mesin ini.",
+                }
+              : p,
+        );
+        try {
+          ws.close();
+        } catch {
+          /* already closed */
+        }
+      }, 6000);
+      ws.onopen = () => {
+        window.clearTimeout(failTimer);
+        setResiPrint(
+          (p) => p && { ...p, phase: "handshake", log: [...p.log, "Terhubung ke plugin print"] },
+        );
+        ws.send(JSON.stringify({ method: "getPrinter", params: null }));
+      };
+      ws.onerror = () => {
+        window.clearTimeout(failTimer);
+        setResiPrint(
+          (p) =>
+            p && p.phase !== "printing"
+              ? {
+                  ...p,
+                  phase: "error",
+                  error:
+                    "Koneksi ke plugin gagal. Pastikan BigSeller Print Plugin berjalan di mesin ini.",
+                }
+              : p,
+        );
+      };
+      ws.onmessage = (m) => {
+        let msg: { method?: string; message?: string | null; data?: unknown; code?: string };
+        try {
+          msg = JSON.parse(String(m.data));
+        } catch {
+          return;
+        }
+        setResiPrint((p) => {
+          if (!p) return p;
+          const detail = typeof msg.data === "string" ? msg.data : "";
+          const log = [
+            ...p.log,
+            [msg.method, msg.code ?? "", detail].filter(Boolean).join(" · "),
+          ];
+          if (msg.code === "FAIL") {
+            return { ...p, phase: "error", error: msg.message || "Plugin melaporkan kegagalan", log };
+          }
+          switch (msg.method) {
+            case "getPrinter": {
+              const printers = Array.isArray(msg.data) ? (msg.data as string[]) : [];
+              const printer =
+                (typeof msg.message === "string" && msg.message) || printers[0] || "(belum dipilih)";
+              if (p.prep) {
+                ws.send(JSON.stringify({ method: "setPuid", params: [p.prep.encryptId, p.prep.uid] }));
+              }
+              return { ...p, printer, log };
+            }
+            case "setPuid":
+              ws.send(JSON.stringify({ method: "getVersion" }));
+              return { ...p, log };
+            case "getVersion":
+              return {
+                ...p,
+                phase: "printing",
+                log: [...log, `Plugin v${detail} — mengambil label dari BigSeller & mencetak…`],
+              };
+            case "printProcess":
+              return { ...p, log: [...log, "progress: " + JSON.stringify(msg.data).slice(0, 140)] };
+            default:
+              return { ...p, log };
+          }
+        });
+      };
+    })();
+  }
+
+  function closeResiPrint() {
+    try {
+      resiWsRef.current?.close();
+    } catch {
+      /* already closed */
+    }
+    resiWsRef.current = null;
+    setResiPrint(null);
+    void load(true);
+  }
 
   // --- On-demand BigSeller sync (Refresh button → progress dialog) ---
   const [syncOpen, setSyncOpen] = useState(false);
@@ -1653,17 +1796,28 @@ function NewOrdersPage() {
                 </Button>
               </>
             ) : (
-              <Button
-                size="sm"
-                onClick={() => {
-                  setCopiedKey(null);
-                  setResiOpen(true);
-                }}
-                title="Kelompokkan per marketplace + ekspedisi untuk bulk print di BigSeller"
-              >
-                <Printer className="size-3.5" /> Print resi (
-                {selectedOrders.size})
-              </Button>
+              <>
+                <Button
+                  size="sm"
+                  disabled={packing || printing !== null}
+                  onClick={() => startResiPrint()}
+                  title="Cetak resi lewat BigSeller Print Plugin (plugin harus berjalan di mesin ini)"
+                >
+                  <Printer className="size-3.5" /> Print resi (
+                  {selectedOrders.size})
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    setCopiedKey(null);
+                    setResiOpen(true);
+                  }}
+                  title="Fallback: salin nomor per grup untuk print manual di BigSeller"
+                >
+                  Salin resi ({selectedOrders.size})
+                </Button>
+              </>
             )}
             <Button
               size="sm"
@@ -1821,6 +1975,71 @@ function NewOrdersPage() {
               }
             >
               Buka BigSeller
+            </Button>
+          </DialogFooter>
+        </DialogPopup>
+      </Dialog>
+
+      <Dialog
+        open={resiPrint !== null}
+        onOpenChange={(open) => {
+          if (!open) closeResiPrint();
+        }}
+      >
+        <DialogPopup>
+          <DialogHeader>
+            <DialogTitle>
+              Print resi —{" "}
+              {resiPrint?.prep
+                ? `${resiPrint.prep.labels.length} label`
+                : `${selectedOrders.size} order`}
+            </DialogTitle>
+            <DialogDescription>
+              Lewat BigSeller Print Plugin (ws://localhost:21319) — plugin
+              harus sedang berjalan di mesin ini.
+            </DialogDescription>
+          </DialogHeader>
+          {resiPrint && (
+            <div className="flex flex-col gap-3 pb-2">
+              {resiPrint.error ? (
+                <p className="rounded-lg border border-destructive/30 bg-destructive/8 px-3 py-2 text-destructive-foreground text-sm">
+                  {resiPrint.error}
+                </p>
+              ) : (
+                <div className="flex items-center gap-2 text-sm">
+                  <LoaderCircle className="size-4 animate-spin text-primary" />
+                  {resiPrint.phase === "preparing" &&
+                    "Menyiapkan label di server BigSeller…"}
+                  {resiPrint.phase === "connecting" &&
+                    "Menghubungkan ke plugin print…"}
+                  {resiPrint.phase === "handshake" && "Handshake plugin…"}
+                  {resiPrint.phase === "printing" &&
+                    "Plugin sedang mengambil label & mencetak resi…"}
+                </div>
+              )}
+              {resiPrint.printer && (
+                <p className="text-muted-foreground text-xs">
+                  Printer: <span className="text-foreground">{resiPrint.printer}</span>
+                </p>
+              )}
+              {resiPrint.prep && resiPrint.prep.notPrintable.length > 0 && (
+                <p className="text-muted-foreground text-xs">
+                  {resiPrint.prep.notPrintable.length} order tidak bisa dicetak
+                  (dibatalkan / tidak lagi printable).
+                </p>
+              )}
+              {resiPrint.log.length > 0 && (
+                <div className="max-h-36 overflow-y-auto rounded-lg border bg-muted/40 px-3 py-2 font-mono text-[11px] text-muted-foreground">
+                  {resiPrint.log.map((l, i) => (
+                    <div key={i}>{l}</div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+          <DialogFooter>
+            <Button onClick={() => closeResiPrint()}>
+              {resiPrint?.phase === "printing" ? "Tutup (cetak jalan terus)" : "Tutup"}
             </Button>
           </DialogFooter>
         </DialogPopup>

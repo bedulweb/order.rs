@@ -397,6 +397,36 @@ export function fetchAnalytics(days: number): Promise<Analytics> {
   return request(`/v1/analytics?days=${days}`);
 }
 
+// --- Resi (shipping label) bulk print via the BigSeller print plugin ---
+
+export interface ResiLabel {
+  orderId: number;
+  platformOrderId: string;
+  platform: string;
+  packageNo?: string;
+  trackingNo?: string;
+  shippingCarrierName?: string;
+}
+
+export interface ResiPrep {
+  /** Encrypted puid for the plugin `setPuid` handshake. */
+  encryptId: string;
+  uid: string;
+  bufferPrintUser: boolean;
+  labels: ResiLabel[];
+  /** Requested orders BigSeller refused (canceled / not printable). */
+  notPrintable: number[];
+  shipProvider?: string;
+}
+
+/** Validate + buffer shipping labels in BigSeller; returns plugin handshake material. */
+export function prepareResiPrint(orderIds: number[]): Promise<ResiPrep> {
+  return request("/v1/orders/resi-print", {
+    method: "POST",
+    body: JSON.stringify({ orderIds }),
+  });
+}
+
 /** One pick-list PDF for an explicit selection — no batch, no claim. */
 export async function downloadPicklistPdf(orderIds: number[]): Promise<void> {
   const token = getToken();

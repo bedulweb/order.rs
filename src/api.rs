@@ -68,6 +68,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/v1/orders/new", get(orders_new))
         .route("/v1/orders/pack", post(orders_pack))
         .route("/v1/orders/picklist-pdf", post(orders_picklist_pdf))
+        .route("/v1/orders/resi-print", post(orders_resi_print))
         .route("/v1/reports/in-cancel/daily", get(cancel_report))
         .route("/v1/stats/today", get(stats_today))
         .route("/v1/analytics", get(analytics_overview))
@@ -716,6 +717,34 @@ struct PackOrdersBody {
     account: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ResiPrintBody {
+    order_ids: Vec<i64>,
+}
+
+/// POST `/v1/orders/resi-print` `{ "orderIds": [..] }` — validate the orders
+/// in BigSeller, buffer their shipping labels (checkPrintInfo) and return the
+/// plugin handshake material (encryptId/uid) plus the label list. The browser
+/// then drives the local BigSeller print plugin over ws://localhost:21319.
+async fn orders_resi_print(
+    State(st): State<ApiState>,
+    headers: HeaderMap,
+    Json(body): Json<ResiPrintBody>,
+) -> std::result::Result<Json<crate::resi::ResiPrep>, ApiError> {
+    check_auth(&st, &headers)?;
+    if body.order_ids.is_empty() {
+        return Err(ApiError::BadRequest("orderIds required".into()));
+    }
+    if body.order_ids.len() > 300 {
+        return Err(ApiError::BadRequest("max 300 orders per resi print".into()));
+    }
+    let prep = crate::resi::prepare_resi_print(&st.base_url, &st.session_path, &body.order_ids)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(prep))
+}
+
 /// POST `/v1/orders/picklist-pdf` `{ "orderIds": [...] }` — one pick-list PDF
 /// for an explicit selection; no batch is created, nothing is claimed.
 async fn orders_picklist_pdf(
@@ -1140,6 +1169,7 @@ mod tests {
             "/v1/orders/new",
             "/v1/orders/pack",
             "/v1/orders/picklist-pdf",
+            "/v1/orders/resi-print",
             "/v1/batches/backlog",
             "/v1/batches",
             "/v1/batches/from-selection",

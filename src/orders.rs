@@ -31,6 +31,11 @@ impl OrdersApi {
         self.http.post_form(path, fields).await
     }
 
+    /// JSON POST (getPuidNew, status counts, pageList).
+    pub async fn post_json(&self, path: &str, body: &Value) -> Result<Value> {
+        self.http.post_json(path, body).await
+    }
+
     /// Status counts for the order sidebar (new / packing / …).
     pub async fn status_counts(&self) -> Result<Value> {
         let body = json!({});
