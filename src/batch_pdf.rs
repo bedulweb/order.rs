@@ -114,7 +114,13 @@ pub fn aggregate_summary_rows(lines: &[PdfOrderLine]) -> Vec<SummarySkuRow> {
     }
 
     let mut rows: Vec<SummarySkuRow> = map.into_values().collect();
-    rows.sort_by(|a, b| b.qty.cmp(&a.qty).then_with(|| a.sku.cmp(&b.sku)));
+    // Urutkan per SKU supaya SKU yang sama berkelompok (OB-0136-* berdekatan).
+    rows.sort_by(|a, b| {
+        a.sku
+            .to_uppercase()
+            .cmp(&b.sku.to_uppercase())
+            .then_with(|| a.variant.cmp(&b.variant))
+    });
     rows
 }
 
@@ -381,14 +387,7 @@ pub async fn render_batch_pdf(
     _urgent_count: i32,
     lines: &[PdfOrderLine],
 ) -> Result<Vec<u8>> {
-    let mut rows = aggregate_summary_rows(lines);
-    // Group the same SKU together (OB-0136-* berdekatan), variants terurut.
-    rows.sort_by(|a, b| {
-        a.sku
-            .to_uppercase()
-            .cmp(&b.sku.to_uppercase())
-            .then_with(|| a.variant.cmp(&b.variant))
-    });
+    let rows = aggregate_summary_rows(lines);
     let urls: Vec<String> = rows.iter().filter_map(|r| r.image_url.clone()).collect();
     let thumbs = fetch_thumbs(&urls).await;
 
@@ -561,6 +560,41 @@ pub async fn render_batch_pdf(
 mod tests {
     use super::*;
     use crate::batch::BatchLineItem;
+
+    fn line(pid: &str, sku: &str, qty: i32) -> PdfOrderLine {
+        PdfOrderLine {
+            platform_order_id: pid.into(),
+            platform: "shopee".into(),
+            carrier: "JNE".into(),
+            is_urgent: false,
+            ordered_at_wib: "-".into(),
+            items: vec![BatchLineItem {
+                sku: Some(sku.into()),
+                name: Some(sku.into()),
+                variant_attr: None,
+                image_url: None,
+                quantity: qty,
+            }],
+        }
+    }
+
+    #[test]
+    fn aggregate_sorts_by_sku_not_qty() {
+        // OB-0136 qty 9 appears first; MB-001 qty 1 last — output must still
+        // be SKU order (MB-001 before OB-0136), not qty/insertion order.
+        let lines = vec![
+            line("AAA1111", "OB-0136-M", 9),
+            line("BBB2222", "MB-043-S-KOGY", 2),
+            line("CCC3333", "MB-001-KOBL", 1),
+            line("DDD4444", "OB-0136-4", 2),
+        ];
+        let rows = aggregate_summary_rows(&lines);
+        let skus: Vec<&str> = rows.iter().map(|r| r.sku.as_str()).collect();
+        assert_eq!(
+            skus,
+            vec!["MB-001-KOBL", "MB-043-S-KOGY", "OB-0136-4", "OB-0136-M"]
+        );
+    }
 
     #[test]
     fn package_code_last4() {
