@@ -260,7 +260,16 @@ pub async fn sync_status_bucket_with(
             let mut q = if opts.historical {
                 OrderListQuery::historical(status)
             } else {
-                OrderListQuery::active(status)
+                let mut q = OrderListQuery::active(status);
+                // packState="0" means UNPACKED — only the New Orders bucket
+                // uses it. Packed buckets (processing/shipped/…) return zero
+                // rows with that filter (verified live: processing totalSize=0
+                // with packState="0" vs 31 with null), which silently made
+                // those bucket syncs no-ops and left stale states behind.
+                if status != "new" {
+                    q.pack_state = None;
+                }
+                q
             };
             q.page_no = page_no;
             q.page_size = page_size;
@@ -744,6 +753,26 @@ impl WorkerState {
         }
     }
 
+    /// Sync a packed bucket (processing/shipped) so orders that move on
+    /// (packed elsewhere, handed to the carrier) leave their stale state.
+    /// The new-bucket pass + reconcile only heal rows still `state='new'`.
+    async fn run_bucket_sync(
+        &mut self,
+        ctx: &SyncContext,
+        status: &'static str,
+        max_pages: u32,
+    ) -> Result<SyncStats> {
+        match sync_status_bucket(&self.pool, &self.api, status, 50, max_pages, ctx).await {
+            Ok(v) => Ok(v),
+            Err(e) if client::is_auth_error(&e) && self.app_cfg.auto_relogin => {
+                warn!(error = %e, "auth expired mid-sync — re-login once");
+                self.relogin().await?;
+                sync_status_bucket(&self.pool, &self.api, status, 50, max_pages, ctx).await
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     /// Persist the live (rotated) cookies to `.session.json` + `bs_sessions`
     /// so CLI tools and recovery paths never read a stale jar. BigSeller
     /// rotates cookies per response; only this long-lived client sees them.
@@ -871,11 +900,13 @@ pub async fn run_worker(pool: PgPool, cfg: Config, app_cfg: WorkerConfig) -> Res
     };
 
     let mut last_cancel_day: Option<u32> = None;
+    let mut tick_n: u64 = 0;
     let mut tick = tokio::time::interval(std::time::Duration::from_secs(app_cfg.new_interval_secs));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
         tick.tick().await;
+        tick_n += 1;
 
         if let Err(e) = state.ensure_api().await {
             warn!(error = %e, "ensure session failed — skip tick");
@@ -905,6 +936,34 @@ pub async fn run_worker(pool: PgPool, cfg: Config, app_cfg: WorkerConfig) -> Res
                 }
             }
             Err(e) => warn!(error = %e, "sync new failed"),
+        }
+
+        // Packed buckets: processing is tiny (1–2 pages) every tick; shipped
+        // is heavier (~9 pages at 50/page), so every 6th tick (~30 min).
+        // Without these, orders packed outside our UI or handed to the
+        // carrier keep their stale state forever (reconcile only heals
+        // rows still state='new').
+        match state.run_bucket_sync(&ctx, "processing", 2).await {
+            Ok(s) if s.state_changed > 0 => {
+                info!(
+                    upserted = s.upserted,
+                    state_changed = s.state_changed, "processing bucket: states caught up"
+                );
+            }
+            Ok(_) => {}
+            Err(e) => warn!(error = %e, "sync processing failed"),
+        }
+        if tick_n.is_multiple_of(6) {
+            match state.run_bucket_sync(&ctx, "shipped", 12).await {
+                Ok(s) if s.state_changed > 0 => {
+                    info!(
+                        upserted = s.upserted,
+                        state_changed = s.state_changed, "shipped bucket: states caught up"
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => warn!(error = %e, "sync shipped failed"),
+            }
         }
 
         if let Err(e) = drain_outbox(&state.pool, &state.app_cfg).await {
