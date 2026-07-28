@@ -1198,6 +1198,8 @@ function NewOrdersPage() {
     prep: ResiPrep | null;
     orderIds: number[];
     confirmed: boolean;
+    /** wavePrintV2 (the actual print command) sent once. */
+    sentWave: boolean;
     printers: string[];
     printer: string | null;
     log: string[];
@@ -1214,6 +1216,7 @@ function NewOrdersPage() {
       prep: null,
       orderIds: ids,
       confirmed: false,
+      sentWave: false,
       printers: [],
       printer: null,
       log: [],
@@ -1319,54 +1322,48 @@ function NewOrdersPage() {
             case "setPuid":
               ws.send(JSON.stringify({ method: "getVersion" }));
               return { ...p, log };
-            case "getVersion": {
+            case "getVersion":
               // Confirm the target printer — without this the plugin prints
-              // to whatever its current default is (e.g. Adobe PDF).
+              // to whatever its current default is (e.g. Adobe PDF). The
+              // plugin's changePrinterResponse is what triggers the actual
+              // print command (handled below).
               if (p.printer) {
                 ws.send(JSON.stringify({ method: "changePrinter", params: [p.printer] }));
-              }
-              // The plugin is connected: register the print job
-              // (confirmLabelPrint) so BigSeller hands it the buffered
-              // labels. This is the step the live web app performs on its
-              // print page — without it the plugin idles forever.
-              if (!p.confirmed && p.orderIds.length > 0) {
-                void confirmResiPrint(p.orderIds)
-                  .then(() => {
-                    setResiPrint(
-                      (q) =>
-                        q && {
-                          ...q,
-                          confirmed: true,
-                          log: [...q.log, "Print job terdaftar — plugin mengambil label…"],
-                        },
-                    );
-                  })
-                  .catch((err) => {
-                    setResiPrint(
-                      (q) =>
-                        q && {
-                          ...q,
-                          confirmed: true,
-                          log: [
-                            ...q.log,
-                            "Gagal mendaftar print job: " +
-                              (err instanceof Error ? err.message : String(err)),
-                          ],
-                        },
-                    );
-                  });
               }
               return {
                 ...p,
                 phase: "printing",
+                log: [...log, `Plugin v${detail} — printer "${p.printer ?? "?"}"`],
+              };
+            case "changePrinterResponse": {
+              // The real print command (captured from BigSeller's print
+              // page): wavePrintV2 with the internal order ids. The plugin
+              // fetches each label from BigSeller and prints it. Plugin
+              // >= 1.2.2 uses wavePrintV2 (ours reports 1.2.5.9).
+              if (!p.sentWave && p.prep && p.prep.labels.length > 0) {
+                const orderList = p.prep.labels.map((l) => ({
+                  id: l.orderId,
+                  isSelf: false,
+                  isLazada: l.platform === "lazada",
+                  printSource: 1, // "processing"
+                  printBatchNo: "",
+                }));
+                ws.send(JSON.stringify({ method: "wavePrintV2", params: [{ orderList }] }));
+                // Mark the labels printed in BigSeller (confirmLabelPrint).
+                if (!p.confirmed) {
+                  void confirmResiPrint(p.orderIds).catch(() => undefined);
+                }
+              }
+              return {
+                ...p,
+                sentWave: true,
+                confirmed: true,
                 log: [
                   ...log,
-                  `Plugin v${detail} — printer "${p.printer ?? "?"}" — mengambil label & mencetak…`,
+                  `wavePrintV2 terkirim (${p.prep?.labels.length ?? 0} order) — plugin mencetak…`,
                 ],
               };
             }
-            case "changePrinterResponse":
-              return { ...p, log: [...log, "Printer dikonfirmasi plugin"] };
             case "printProcess":
               return { ...p, log: [...log, "progress: " + JSON.stringify(msg.data).slice(0, 140)] };
             default:
