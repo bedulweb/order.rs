@@ -1186,7 +1186,9 @@ function NewOrdersPage() {
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="sticky top-14 z-30 -mx-4 border-b bg-card/60 px-4 py-1.5 backdrop-blur">
+      {/* -mt-6 cancels main's top padding so the bar hugs the header even
+          before any scrolling; sticky keeps it there afterwards. */}
+      <div className="sticky top-14 z-30 -mx-4 -mt-6 border-b bg-card/60 px-4 py-1.5 backdrop-blur">
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
         <div className="flex flex-wrap items-center gap-1.5">
           {FEED_TABS.map((t) => (
