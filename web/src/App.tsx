@@ -1290,17 +1290,22 @@ function NewOrdersPage() {
           }
           switch (msg.method) {
             case "getPrinter": {
-              // Exactly the live BigSeller web sequence (captured): after the
-              // printer list arrives, ask for the version — nothing else. The
-              // plugin is logged into BigSeller itself and pulls the labels
-              // buffered by checkPrintInfo; no setPuid/changePrinter needed
-              // (sending them makes the plugin loop on getVersion responses).
+              // SDK handshake order: printer list -> setPuid (who am I) ->
+              // getVersion; after the version response the plugin pulls the
+              // labels buffered by checkPrintInfo and prints them.
               const printers = Array.isArray(msg.data) ? (msg.data as string[]) : [];
               const printer =
                 (typeof msg.message === "string" && msg.message) || printers[0] || "(belum dipilih)";
-              ws.send(JSON.stringify({ method: "getVersion" }));
+              if (p.prep) {
+                ws.send(JSON.stringify({ method: "setPuid", params: [p.prep.encryptId, p.prep.uid] }));
+              } else {
+                ws.send(JSON.stringify({ method: "getVersion" }));
+              }
               return { ...p, printer, log };
             }
+            case "setPuid":
+              ws.send(JSON.stringify({ method: "getVersion" }));
+              return { ...p, log };
             case "getVersion":
               return {
                 ...p,

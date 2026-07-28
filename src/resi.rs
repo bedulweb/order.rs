@@ -15,7 +15,6 @@
 //! because the WebSocket must originate from the user's machine.
 
 use crate::error::{Error, Result};
-use crate::orders::OrdersApi;
 use crate::session::SessionData;
 use serde::Serialize;
 use std::path::Path;
@@ -58,7 +57,37 @@ pub async fn prepare_resi_print(
         return Err(Error::Other("no orders selected".into()));
     }
     let session = SessionData::load(session_path)?;
-    let api = OrdersApi::new(base_url, &session)?;
+
+    // BigSeller only queues the labels for the print plugin when the call
+    // looks like it comes from the browser app — a bare API call (no
+    // origin/referer/x-requested-with) returns the label list fine but the
+    // plugin's server-side queue stays empty and nothing prints.
+    let client = {
+        let mut headers = reqwest::header::HeaderMap::new();
+        let mut put = |k: &'static str, v: String| {
+            if let Ok(val) = reqwest::header::HeaderValue::from_str(&v) {
+                headers.insert(k, val);
+            }
+        };
+        put("clienttype", "1".into());
+        put("origin", base_url.to_string());
+        put("referer", format!("{base_url}/web/order/index.htm"));
+        put("x-requested-with", "XMLHttpRequest".into());
+        put("sec-fetch-dest", "empty".into());
+        put("sec-fetch-mode", "cors".into());
+        put("sec-fetch-site", "same-origin".into());
+        put("accept", "application/json, text/plain, */*".into());
+        put(
+            "user-agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36".into(),
+        );
+        put("cookie", session.cookie_header());
+        reqwest::Client::builder()
+            .default_headers(headers)
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(|e| Error::Other(e.to_string()))?
+    };
 
     // 1) Validate + buffer the platform labels server-side. isCross=1 allows
     //    mixed carriers in one print job (matches the live web app).
@@ -67,17 +96,20 @@ pub async fn prepare_resi_print(
         .map(|i| i.to_string())
         .collect::<Vec<_>>()
         .join(",");
-    let check = api
-        .post_form(
-            "/api/v1/print/print/checkPrintInfo.json",
-            &[
-                ("orderIds", csv),
-                ("printType", "0".to_string()),
-                ("isInventory", "0".to_string()),
-                ("isCross", "1".to_string()),
-            ],
-        )
-        .await?;
+    let check: serde_json::Value = client
+        .post(format!("{base_url}/api/v1/print/print/checkPrintInfo.json"))
+        .form(&[
+            ("orderIds", csv.as_str()),
+            ("printType", "0"),
+            ("isInventory", "0"),
+            ("isCross", "1"),
+        ])
+        .send()
+        .await
+        .map_err(|e| Error::Other(e.to_string()))?
+        .json()
+        .await
+        .map_err(|e| Error::Other(e.to_string()))?;
     let data = check.get("data").cloned().unwrap_or_default();
     let labels: Vec<ResiLabel> = data
         .get("printedListMap")
@@ -117,9 +149,15 @@ pub async fn prepare_resi_print(
         .unwrap_or_default();
 
     // 2) Encrypted puid for the plugin handshake.
-    let puid = api
-        .post_json("/api/v1/print/getPuidNew.json", &serde_json::json!({}))
-        .await?;
+    let puid: serde_json::Value = client
+        .post(format!("{base_url}/api/v1/print/getPuidNew.json"))
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .map_err(|e| Error::Other(e.to_string()))?
+        .json()
+        .await
+        .map_err(|e| Error::Other(e.to_string()))?;
     let pdata = puid.get("data").cloned().unwrap_or_default();
     let encrypt_id = pdata
         .get("encryptId")
