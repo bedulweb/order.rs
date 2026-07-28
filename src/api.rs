@@ -63,6 +63,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/v1/orders/events", get(events))
         .route("/v1/orders/new", get(orders_new))
         .route("/v1/orders/pack", post(orders_pack))
+        .route("/v1/orders/picklist-pdf", post(orders_picklist_pdf))
         .route("/v1/reports/in-cancel/daily", get(cancel_report))
         // Ops batches (pick lists)
         .route("/v1/batches/backlog", get(batches_backlog))
@@ -638,6 +639,34 @@ struct PackOrdersBody {
     account: Option<String>,
 }
 
+/// POST `/v1/orders/picklist-pdf` `{ "orderIds": [...] }` — one pick-list PDF
+/// for an explicit selection; no batch is created, nothing is claimed.
+async fn orders_picklist_pdf(
+    State(st): State<ApiState>,
+    headers: HeaderMap,
+    Json(body): Json<PackOrdersBody>,
+) -> std::result::Result<Response, ApiError> {
+    check_auth(&st, &headers)?;
+    if body.order_ids.is_empty() {
+        return Err(ApiError::BadRequest("orderIds required".into()));
+    }
+    if body.order_ids.len() > 500 {
+        return Err(ApiError::BadRequest("max 500 orders per PDF".into()));
+    }
+    let (filename, bytes) = batch::render_picklist_pdf(&st.pool, &body.order_ids)
+        .await
+        .map_err(ApiError::from)?;
+    let mut res = Response::new(bytes.into());
+    res.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/pdf"),
+    );
+    if let Ok(v) = HeaderValue::from_str(&format!("attachment; filename=\"{filename}\"")) {
+        res.headers_mut().insert(header::CONTENT_DISPOSITION, v);
+    }
+    Ok(res)
+}
+
 // ---------------------------------------------------------------------------
 // Ops batches
 // ---------------------------------------------------------------------------
@@ -1029,6 +1058,7 @@ mod tests {
         for path in [
             "/v1/orders/new",
             "/v1/orders/pack",
+            "/v1/orders/picklist-pdf",
             "/v1/batches/backlog",
             "/v1/batches",
             "/v1/batches/from-selection",

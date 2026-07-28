@@ -251,6 +251,43 @@ export function packOrders(orderIds: number[]): Promise<PackResult> {
   });
 }
 
+/** One pick-list PDF for an explicit selection — no batch, no claim. */
+export async function downloadPicklistPdf(orderIds: number[]): Promise<void> {
+  const token = getToken();
+  const headers = new Headers({ "Content-Type": "application/json" });
+  if (token) {
+    headers.set("Authorization", `Bearer ${token}`);
+    headers.set("X-Api-Key", token);
+  }
+  const res = await fetch("/v1/orders/picklist-pdf", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ orderIds }),
+  });
+  if (!res.ok) {
+    let message = "Failed to generate PDF";
+    try {
+      const body = (await res.json()) as { error?: string };
+      if (body?.error) message = body.error;
+    } catch {
+      /* ignore */
+    }
+    throw new ApiError(res.status, message);
+  }
+  const blob = await res.blob();
+  const cd = res.headers.get("content-disposition") ?? "";
+  const match = /filename="?([^";]+)"?/i.exec(cd);
+  const filename = match?.[1] ?? "picklist.pdf";
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 export function fetchBatch(id: string): Promise<BatchDetail> {
   return request(`/v1/batches/${id}`);
 }

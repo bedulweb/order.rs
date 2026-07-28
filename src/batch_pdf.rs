@@ -23,7 +23,7 @@ use uuid::Uuid;
 
 const PAGE_W: f32 = 210.0;
 const PAGE_H: f32 = 297.0;
-const MARGIN: f32 = 14.0;
+const MARGIN: f32 = 8.0;
 const FOOTER_Y: f32 = 12.0;
 const CONTENT_BOTTOM: f32 = 20.0;
 const QTY_COL_W: f32 = 16.0;
@@ -300,6 +300,9 @@ fn text_at(
     x: f32,
     y: f32,
 ) {
+    // Text uses the layer's current fill color — thumb plates set it to a
+    // near-white gray, so always force black before drawing text.
+    layer.set_fill_color(Color::Rgb(Rgb::new(0.0, 0.0, 0.0, None)));
     layer.use_text(sanitize(s), size, Mm(x), Mm(y), font);
 }
 
@@ -378,7 +381,14 @@ pub async fn render_batch_pdf(
     _urgent_count: i32,
     lines: &[PdfOrderLine],
 ) -> Result<Vec<u8>> {
-    let rows = aggregate_summary_rows(lines);
+    let mut rows = aggregate_summary_rows(lines);
+    // Group the same SKU together (OB-0136-* berdekatan), variants terurut.
+    rows.sort_by(|a, b| {
+        a.sku
+            .to_uppercase()
+            .cmp(&b.sku.to_uppercase())
+            .then_with(|| a.variant.cmp(&b.variant))
+    });
     let urls: Vec<String> = rows.iter().filter_map(|r| r.image_url.clone()).collect();
     let thumbs = fetch_thumbs(&urls).await;
 

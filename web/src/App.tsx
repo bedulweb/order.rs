@@ -31,6 +31,7 @@ import {
   createBatch,
   createBatchFromSelection,
   downloadBatchPdf,
+  downloadPicklistPdf,
   fetchBacklog,
   fetchBatch,
   fetchBatchesToday,
@@ -1048,6 +1049,21 @@ function NewOrdersPage() {
   // --- + carrier (BigSeller only bulk-prints within one carrier).
   const [resiOpen, setResiOpen] = useState(false);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const [pdfBusy, setPdfBusy] = useState(false);
+
+  async function downloadSelectedPdf() {
+    const ids = [...selectedOrders.keys()];
+    if (ids.length === 0 || pdfBusy) return;
+    setPdfBusy(true);
+    setError(null);
+    try {
+      await downloadPicklistPdf(ids);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Gagal membuat PDF");
+    } finally {
+      setPdfBusy(false);
+    }
+  }
 
   const resiGroups = useMemo(() => {
     const m = new Map<string, { platform: string; carrier: string; ids: string[] }>();
@@ -1414,6 +1430,16 @@ function NewOrdersPage() {
               )}
             </div>
             <div className="mx-1 h-8 w-px bg-border" />
+            <Button
+              size="sm"
+              variant="outline"
+              loading={pdfBusy}
+              disabled={pdfBusy || packing || printing !== null}
+              onClick={() => void downloadSelectedPdf()}
+              title="Satu PDF pick list untuk semua order yang dipilih — tanpa klaim batch"
+            >
+              <Printer className="size-3.5" /> PDF ({selectedOrders.size})
+            </Button>
             {statusTab === "new" ? (
               <>
                 <Button

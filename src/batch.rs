@@ -366,7 +366,7 @@ fn resolve_line_item(
     }
 }
 
-async fn load_items_for_orders(
+pub(crate) async fn load_items_for_orders(
     pool: &PgPool,
     order_ids: &[i64],
 ) -> Result<std::collections::HashMap<i64, Vec<BatchLineItem>>> {
@@ -673,6 +673,67 @@ pub struct SelectionBatchResult {
 /// `batch_orders` makes double-print impossible even under concurrency.
 /// Unclaimable requests are reported in `skipped` (not an error) unless
 /// nothing at all could be claimed.
+/// Render one pick-list PDF for an explicit order selection — no batch is
+/// created and nothing is claimed; pure output for the ops "Print All" button.
+pub async fn render_picklist_pdf(pool: &PgPool, order_ids: &[i64]) -> Result<(String, Vec<u8>)> {
+    if order_ids.is_empty() {
+        return Err(Error::Other("no orders selected".into()));
+    }
+    let rows = sqlx::query(
+        r#"
+        SELECT o.id, o.platform_order_id, o.platform,
+               o.buyer_shipping_carrier, o.shipment_provider, o.shipping_carrier_name,
+               o.ordered_at
+        FROM orders o
+        WHERE o.id = ANY($1)
+        ORDER BY o.ordered_at ASC NULLS LAST, o.id ASC
+        "#,
+    )
+    .bind(order_ids)
+    .fetch_all(pool)
+    .await?;
+    if rows.is_empty() {
+        return Err(Error::Other("tidak ada order yang ditemukan".into()));
+    }
+
+    let ids: Vec<i64> = rows.iter().map(|r| r.get("id")).collect();
+    let items_map = load_items_for_orders(pool, &ids).await?;
+
+    let mut lines: Vec<PdfOrderLine> = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let id: i64 = row.get("id");
+        let buyer: Option<String> = row.get("buyer_shipping_carrier");
+        let ship: Option<String> = row.get("shipment_provider");
+        let name: Option<String> = row.get("shipping_carrier_name");
+        let ordered_at: Option<DateTime<Utc>> = row.get("ordered_at");
+        lines.push(PdfOrderLine {
+            platform_order_id: row.get("platform_order_id"),
+            platform: row.get("platform"),
+            carrier: carrier_display(buyer.as_deref(), ship.as_deref(), name.as_deref())
+                .unwrap_or_else(|| "-".into()),
+            is_urgent: is_urgent_carrier(buyer.as_deref(), ship.as_deref(), name.as_deref()),
+            ordered_at_wib: ordered_at.map(format_wib).unwrap_or_else(|| "-".into()),
+            items: items_map.get(&id).cloned().unwrap_or_default(),
+        });
+    }
+
+    let now = Utc::now();
+    let bytes = crate::batch_pdf::render_batch_pdf(
+        Uuid::new_v4(),
+        BatchSession::Morning, // renderer ignores session/batch id
+        &format_wib(now),
+        lines.len() as i32,
+        0,
+        &lines,
+    )
+    .await?;
+    let filename = format!(
+        "picklist-{}.pdf",
+        now.with_timezone(&wib_offset()).format("%Y%m%d-%H%M")
+    );
+    Ok((filename, bytes))
+}
+
 pub async fn create_batch_from_selection(
     pool: &PgPool,
     session: BatchSession,
