@@ -397,6 +397,7 @@ async fn main() -> anyhow::Result<()> {
                 web_dist: cfg.web_dist.clone(),
                 base_url: cfg.base_url.clone(),
                 session_path: cfg.session_path.clone(),
+                sync_progress: orders::ondemand::progress_handle(),
             };
             api::serve(state, addr).await?;
         }

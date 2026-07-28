@@ -30,6 +30,7 @@ pub mod instant_notify;
 pub mod map;
 pub mod notify;
 pub mod ocr;
+pub mod ondemand;
 pub mod orders;
 pub mod pack;
 pub mod product_names;

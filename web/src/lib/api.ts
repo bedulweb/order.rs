@@ -251,6 +251,47 @@ export function packOrders(orderIds: number[]): Promise<PackResult> {
   });
 }
 
+// --- On-demand BigSeller sync (Refresh dialog) ---
+
+export type SyncStepState = "pending" | "running" | "ok" | "error";
+
+export interface SyncStep {
+  key: string;
+  label: string;
+  state: SyncStepState;
+  detail?: string;
+}
+
+export interface SyncRunResult {
+  pages: number;
+  upserted: number;
+  created: number;
+  stateChanged: number;
+  healed: number;
+  archived: number;
+}
+
+export interface SyncProgress {
+  running: boolean;
+  /** Epoch ms of the run start; 0 when nothing has run since API boot. */
+  startedAtMs: number;
+  finishedAtMs?: number;
+  ok?: boolean;
+  error?: string;
+  steps: SyncStep[];
+  result?: SyncRunResult;
+}
+
+/** Kick off an on-demand sync; `started` is false when one is in flight. */
+export function startSyncRun(): Promise<{ ok: boolean; started: boolean }> {
+  return request("/v1/sync/run", { method: "POST" });
+}
+
+/** Live step progress for the Refresh dialog. */
+export function fetchSyncProgress(): Promise<SyncProgress> {
+  return request("/v1/sync/progress");
+}
+
 /** One pick-list PDF for an explicit selection — no batch, no claim. */
 export async function downloadPicklistPdf(orderIds: number[]): Promise<void> {
   const token = getToken();

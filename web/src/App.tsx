@@ -20,6 +20,10 @@ import {
   BadgeCheck,
   ChevronLeft,
   ChevronRight,
+  Circle,
+  CircleCheck,
+  CircleX,
+  LoaderCircle,
   PackageCheck,
   Printer,
   Search,
@@ -39,12 +43,14 @@ import {
   regenerateBatchPdf,
   fetchCatalogProducts,
   fetchOrdersFeed,
+  fetchSyncProgress,
   formatIdr,
   formatWib,
   getToken,
   importCatalog,
   packOrders,
   setToken,
+  startSyncRun,
   type BacklogOrder,
   type BacklogResponse,
   type BatchDetail,
@@ -58,6 +64,8 @@ import {
   type OrdersFeedResponse,
   type PackResult,
   type SelectionBatchResult,
+  type SyncProgress,
+  type SyncStepState,
 } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -824,7 +832,6 @@ function NewOrdersPage() {
   const [data, setData] = useState<OrdersFeedResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [flashIds, setFlashIds] = useState<Set<number>>(new Set());
@@ -861,7 +868,6 @@ function NewOrdersPage() {
   const load = useCallback(
     async (silent: boolean) => {
       if (!silent) setLoading(true);
-      setRefreshing(true);
       setError(null);
       try {
         const resp = await fetchOrdersFeed({
@@ -890,7 +896,6 @@ function NewOrdersPage() {
         setError(err instanceof Error ? err.message : "Failed to load");
       } finally {
         setLoading(false);
-        setRefreshing(false);
       }
     },
     [statusTab, appliedQ, page],
@@ -1049,6 +1054,47 @@ function NewOrdersPage() {
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [pdfBusy, setPdfBusy] = useState(false);
 
+  // --- On-demand BigSeller sync (Refresh button → progress dialog) ---
+  const [syncOpen, setSyncOpen] = useState(false);
+  const [sync, setSync] = useState<SyncProgress | null>(null);
+
+  async function startSync() {
+    setError(null);
+    setSync(null);
+    setSyncOpen(true);
+    try {
+      await startSyncRun();
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Gagal memulai sinkronisasi",
+      );
+      setSyncOpen(false);
+    }
+  }
+
+  // Poll the run while the dialog is open; stop once it finishes.
+  useEffect(() => {
+    if (!syncOpen) return;
+    let cancelled = false;
+    let timer = 0;
+    const tick = async () => {
+      try {
+        const p = await fetchSyncProgress();
+        if (cancelled) return;
+        setSync(p);
+        if (!p.running) return;
+      } catch {
+        // transient hiccup — keep polling
+      }
+      if (!cancelled) timer = window.setTimeout(tick, 600);
+    };
+    void tick();
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [syncOpen]);
+
   async function downloadSelectedPdf() {
     const ids = [...selectedOrders.keys()];
     if (ids.length === 0 || pdfBusy) return;
@@ -1140,8 +1186,8 @@ function NewOrdersPage() {
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="sticky top-14 z-30 -mx-4 flex flex-col gap-2 bg-background/95 px-4 py-2 backdrop-blur">
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="sticky top-14 z-30 -mx-4 border-b bg-card/60 px-4 py-1.5 backdrop-blur">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
         <div className="flex flex-wrap items-center gap-1.5">
           {FEED_TABS.map((t) => (
             <button
@@ -1172,7 +1218,7 @@ function NewOrdersPage() {
           ))}
         </div>
 
-        <div className="relative ms-auto w-full sm:w-72">
+        <div className="relative ms-auto w-full sm:w-64">
           <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
           <Input
             ref={searchRef}
@@ -1183,9 +1229,7 @@ function NewOrdersPage() {
           />
           <Kbd className="absolute top-1/2 right-2 -translate-y-1/2">/</Kbd>
         </div>
-      </div>
 
-      <div className="flex flex-wrap items-center justify-end gap-2">
           {lastUpdated && (
             <span className="hidden text-muted-foreground text-xs sm:inline">
               Diperbarui{" "}
@@ -1217,8 +1261,7 @@ function NewOrdersPage() {
           <Button
             variant="outline"
             size="sm"
-            loading={refreshing}
-            onClick={() => void load(true)}
+            onClick={() => void startSync()}
           >
             Refresh
           </Button>
@@ -1649,8 +1692,99 @@ function NewOrdersPage() {
           </DialogFooter>
         </DialogPopup>
       </Dialog>
+
+      <Dialog
+        open={syncOpen}
+        onOpenChange={(open) => {
+          if (!open) {
+            setSyncOpen(false);
+            // Finished run: refresh the table to show the new state.
+            if (sync && !sync.running) void load(true);
+          }
+        }}
+      >
+        <DialogPopup>
+          <DialogHeader>
+            <DialogTitle>Sinkronisasi BigSeller</DialogTitle>
+            <DialogDescription>
+              Tarik order masuk terbaru langsung dari BigSeller, lalu pulihkan
+              state order yang berubah di luar siklus worker.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-0.5 px-4">
+            {sync === null && (
+              <div className="flex items-center gap-2.5 px-2 py-1.5 text-muted-foreground text-sm">
+                <LoaderCircle className="size-4 animate-spin" />
+                Memulai…
+              </div>
+            )}
+            {sync?.steps.map((s) => (
+              <div
+                key={s.key}
+                className="flex items-start gap-2.5 rounded-lg px-2 py-1.5"
+              >
+                <SyncStepIcon state={s.state} />
+                <div className="min-w-0">
+                  <div
+                    className={cn(
+                      "text-sm font-medium",
+                      s.state === "pending" && "text-muted-foreground",
+                    )}
+                  >
+                    {s.label}
+                  </div>
+                  {s.detail && (
+                    <div
+                      className={cn(
+                        "text-xs",
+                        s.state === "error"
+                          ? "text-destructive"
+                          : "text-muted-foreground",
+                      )}
+                    >
+                      {s.detail}
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+            {sync && !sync.running && sync.ok === false && sync.error && (
+              <p className="mx-2 my-1.5 rounded-lg border border-destructive/30 bg-destructive/8 px-3 py-2 text-destructive-foreground text-sm">
+                {sync.error}
+              </p>
+            )}
+          </div>
+          <DialogFooter>
+            {sync && !sync.running && (
+              <Button variant="outline" onClick={() => void startSync()}>
+                Jalankan lagi
+              </Button>
+            )}
+            <DialogClose render={<Button />}>
+              {sync?.running ? "Tutup (jalan terus)" : "Tutup"}
+            </DialogClose>
+          </DialogFooter>
+        </DialogPopup>
+      </Dialog>
     </div>
   );
+}
+
+function SyncStepIcon({ state }: { state: SyncStepState }) {
+  switch (state) {
+    case "running":
+      return (
+        <LoaderCircle className="mt-0.5 size-4 shrink-0 animate-spin text-primary" />
+      );
+    case "ok":
+      return <CircleCheck className="mt-0.5 size-4 shrink-0 text-success" />;
+    case "error":
+      return <CircleX className="mt-0.5 size-4 shrink-0 text-destructive" />;
+    default:
+      return (
+        <Circle className="mt-0.5 size-4 shrink-0 text-muted-foreground/40" />
+      );
+  }
 }
 
 function BacklogPage() {

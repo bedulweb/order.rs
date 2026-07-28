@@ -49,6 +49,8 @@ pub struct ApiState {
     /// used for user-initiated actions like Pack.
     pub base_url: String,
     pub session_path: PathBuf,
+    /// Live progress of the UI-triggered on-demand sync (Refresh button).
+    pub sync_progress: crate::ondemand::ProgressHandle,
 }
 
 pub fn router(state: ApiState) -> Router {
@@ -56,6 +58,8 @@ pub fn router(state: ApiState) -> Router {
     let api = Router::new()
         .route("/health", get(health))
         .route("/v1/sync/status", get(sync_status))
+        .route("/v1/sync/run", post(sync_run))
+        .route("/v1/sync/progress", get(sync_progress_snapshot))
         .route(
             "/v1/orders/by-platform-id/{platform_order_id}",
             get(lookup_by_platform_id),
@@ -150,6 +154,34 @@ async fn sync_status(
         "orderCount": order_count,
         "recentRuns": summary.get("recentRuns").cloned().unwrap_or(json!([])),
     })))
+}
+
+/// POST `/v1/sync/run` — kick off an on-demand new-orders sync from
+/// BigSeller (the ops UI Refresh button). `started` is false when a run is
+/// already in flight; progress is readable either way.
+async fn sync_run(
+    State(st): State<ApiState>,
+    headers: HeaderMap,
+) -> std::result::Result<Json<serde_json::Value>, ApiError> {
+    check_auth(&st, &headers)?;
+    let started = crate::ondemand::start(
+        &st.sync_progress,
+        st.pool.clone(),
+        st.base_url.clone(),
+        st.session_path.clone(),
+        None,
+    )
+    .await;
+    Ok(Json(json!({ "ok": true, "started": started })))
+}
+
+/// GET `/v1/sync/progress` — live step progress for the Refresh dialog.
+async fn sync_progress_snapshot(
+    State(st): State<ApiState>,
+    headers: HeaderMap,
+) -> std::result::Result<Json<crate::ondemand::SyncProgress>, ApiError> {
+    check_auth(&st, &headers)?;
+    Ok(Json(st.sync_progress.lock().await.clone()))
 }
 
 fn check_auth(st: &ApiState, headers: &HeaderMap) -> std::result::Result<(), ApiError> {
@@ -1056,6 +1088,8 @@ mod tests {
         // Source-level contract: router registers these exact paths.
         let src = include_str!("api.rs");
         for path in [
+            "/v1/sync/run",
+            "/v1/sync/progress",
             "/v1/orders/new",
             "/v1/orders/pack",
             "/v1/orders/picklist-pdf",
