@@ -1301,12 +1301,21 @@ function NewOrdersPage() {
             case "setPuid":
               ws.send(JSON.stringify({ method: "getVersion" }));
               return { ...p, log };
-            case "getVersion":
+            case "getVersion": {
+              // The real BigSeller web confirms the printer right after the
+              // version handshake — this is what tells the plugin to start
+              // pulling the buffered labels and printing.
+              if (p.printer && p.printer !== "(belum dipilih)") {
+                ws.send(JSON.stringify({ method: "changePrinter", params: [p.printer] }));
+              }
               return {
                 ...p,
                 phase: "printing",
-                log: [...log, `Plugin v${detail} — mengambil label dari BigSeller & mencetak…`],
+                log: [...log, `Plugin v${detail} — memilih printer & mulai mencetak…`],
               };
+            }
+            case "changePrinterResponse":
+              return { ...p, log: [...log, "Printer dikonfirmasi — plugin mengambil label & mencetak…"] };
             case "printProcess":
               return { ...p, log: [...log, "progress: " + JSON.stringify(msg.data).slice(0, 140)] };
             default:
