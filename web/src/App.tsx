@@ -6,6 +6,7 @@ import {
   NavLink,
   Route,
   Routes,
+  useLocation,
   useNavigate,
   useParams,
 } from "react-router-dom";
@@ -101,6 +102,15 @@ export default function App() {
 
 function AppRoutes() {
   const [token, setTokenState] = useState<string | null>(() => getToken());
+  const loc = useLocation();
+  const pageTitle = (() => {
+    const p = loc.pathname;
+    if (p.startsWith("/order-masuk")) return "Order masuk";
+    if (p.startsWith("/backlog")) return "Backlog";
+    if (p.startsWith("/products")) return "Products";
+    if (p.startsWith("/batches/")) return "Batch detail";
+    return "Orders Ops";
+  })();
 
   if (!token) {
     return (
@@ -115,14 +125,11 @@ function AppRoutes() {
 
   return (
     <div className="min-h-svh bg-background text-foreground">
-      <header className="border-b bg-card/60 backdrop-blur">
-        <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-3">
+      <header className="sticky top-0 z-40 border-b bg-card/60 backdrop-blur">
+        <div className="mx-auto flex h-14 max-w-6xl items-center justify-between gap-4 px-4">
           <Link to="/" className="text-left no-underline">
             <div className="font-heading text-lg font-semibold tracking-tight text-foreground">
-              Orders Ops
-            </div>
-            <div className="text-muted-foreground text-xs">
-              Asia/Jakarta · pick lists · rs.obayito.com
+              {pageTitle}
             </div>
           </Link>
           <nav className="flex flex-wrap items-center gap-2">
@@ -318,16 +325,7 @@ function OpsHome() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="font-heading text-2xl font-semibold tracking-tight">
-            Warehouse ops
-          </h1>
-          <p className="text-muted-foreground text-sm">
-            Morning / afternoon sessions · urgent anytime · membership = source of
-            truth
-          </p>
-        </div>
+      <div className="flex flex-wrap items-center justify-end gap-3">
         <Button variant="outline" size="sm" onClick={() => void load()}>
           Refresh
         </Button>
@@ -1142,19 +1140,7 @@ function NewOrdersPage() {
 
   return (
     <div className="flex flex-col gap-4">
-      <div>
-        <Button size="sm" variant="ghost" render={<Link to="/" />}>
-          ← Home
-        </Button>
-        <h1 className="font-heading text-2xl font-semibold tracking-tight">
-          Order masuk
-        </h1>
-        <p className="text-muted-foreground text-sm">
-          Cermin tab order BigSeller · terbaru di atas
-          {appliedQ ? ` · cari: “${appliedQ}”` : ""}
-        </p>
-      </div>
-
+      <div className="sticky top-14 z-30 -mx-4 flex flex-col gap-2 bg-background/95 px-4 py-2 backdrop-blur">
       <div className="flex flex-wrap items-center gap-2">
         <div className="flex flex-wrap items-center gap-1.5">
           {FEED_TABS.map((t) => (
@@ -1237,6 +1223,7 @@ function NewOrdersPage() {
             Refresh
           </Button>
         </div>
+      </div>
 
       {error && (
         <p className="text-destructive text-sm" role="alert">
@@ -1688,19 +1675,6 @@ function BacklogPage() {
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex items-center justify-between gap-2">
-        <div>
-          <Button size="sm" variant="ghost" render={<Link to="/" />}>
-            ← Home
-          </Button>
-          <h1 className="font-heading text-2xl font-semibold">Backlog</h1>
-          <p className="text-muted-foreground text-sm">
-            {data
-              ? `${data.total} orders · ${data.urgentCount} urgent`
-              : "Loading…"}
-          </p>
-        </div>
-      </div>
       {error && (
         <p className="text-destructive text-sm" role="alert">
           {error}
@@ -1758,7 +1732,6 @@ function BacklogPage() {
 
 function ProductsPage() {
   const [rows, setRows] = useState<CatalogProduct[]>([]);
-  const [total, setTotal] = useState(0);
   const [q, setQ] = useState("");
   const [search, setSearch] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -1775,7 +1748,6 @@ function ProductsPage() {
         limit: 500,
       });
       setRows(resp.products);
-      setTotal(resp.total);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load catalog");
     } finally {
@@ -1806,16 +1778,7 @@ function ProductsPage() {
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <Button size="sm" variant="ghost" render={<Link to="/" />}>
-            ← Home
-          </Button>
-          <h1 className="font-heading text-2xl font-semibold">Products</h1>
-          <p className="text-muted-foreground text-sm">
-            Catalog by ART (SKU) · HPP in IDR · {total} products
-          </p>
-        </div>
+      <div className="flex flex-wrap items-center justify-end gap-3">
         <div className="flex flex-wrap items-center gap-2">
           <form
             className="flex gap-2"
@@ -1928,15 +1891,6 @@ function BatchDetailPage() {
           <Button size="sm" variant="ghost" render={<Link to="/" />}>
             ← Home
           </Button>
-          <h1 className="font-heading text-2xl font-semibold">Batch detail</h1>
-          {detail && (
-            <p className="text-muted-foreground text-sm">
-              <span className="capitalize">{detail.session}</span> ·{" "}
-              {detail.createdAtWib} · {detail.orderCount} orders (
-              {detail.urgentCount} urgent)
-            </p>
-          )}
-          <p className="mt-1 font-mono text-xs text-muted-foreground">{id}</p>
         </div>
         <div className="flex flex-wrap gap-2">
           <Button
