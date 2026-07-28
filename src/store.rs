@@ -129,7 +129,7 @@ pub async fn upsert_order(
             print_label_mark, print_bill_mark, print_pick_list_mark, print_collect_mark,
             has_error, error_msg,
             ordered_at, paid_at, ship_by_at, completed_at, deadline_at, timeout_at, printed_collect_at,
-            payload, payload_hash, first_seen_at, synced_at, updated_at
+            payload, payload_hash, first_seen_at, synced_at, updated_at, state_changed_at
         ) VALUES (
             $1,$2,$3,$4,$5,$6,$7,
             $8,$9,$10,$11,$12,
@@ -143,7 +143,7 @@ pub async fn upsert_order(
             $34,$35,$36,$37,
             $38,$39,
             $40,$41,$42,$43,$44,$45,$46,
-            $47,$48, now(), now(), now()
+            $47,$48, now(), now(), now(), now()
         )
         ON CONFLICT (id) DO UPDATE SET
             account_id = COALESCE(EXCLUDED.account_id, orders.account_id),
@@ -153,6 +153,10 @@ pub async fn upsert_order(
             package_no = EXCLUDED.package_no,
             package_index = EXCLUDED.package_index,
             state = EXCLUDED.state,
+            state_changed_at = CASE
+                WHEN orders.state IS DISTINCT FROM EXCLUDED.state THEN now()
+                ELSE orders.state_changed_at
+            END,
             platform_state = EXCLUDED.platform_state,
             view_status = EXCLUDED.view_status,
             marketplace_state = EXCLUDED.marketplace_state,
@@ -700,12 +704,19 @@ impl FeedStatus {
         }
     }
 
+    /// SQL filter for the tab. Processing/shipped/completed are scoped to
+    /// "state changed since $6" (today WIB, bound by `list_orders_feed`) so
+    /// the tabs show today's movement, not the cumulative state pool — the
+    /// processing bucket otherwise accumulates every order still waiting for
+    /// carrier pickup. `$6` is unused (but still bound) for new/all.
     fn state_clause(self) -> &'static str {
         match self {
             Self::New => "o.state = 'new'",
-            Self::Processing => "o.state IN ('processing', 'pickup', 'platformProcessing')",
-            Self::Shipped => "o.state = 'shipped'",
-            Self::Completed => "o.state = 'completed'",
+            Self::Processing => {
+                "o.state IN ('processing', 'pickup', 'platformProcessing') AND o.state_changed_at >= $6"
+            }
+            Self::Shipped => "o.state = 'shipped' AND o.state_changed_at >= $6",
+            Self::Completed => "o.state = 'completed' AND o.state_changed_at >= $6",
             // Everything except our internal archived (vanished) state.
             Self::All => "o.state <> 'archived'",
         }
@@ -765,6 +776,18 @@ pub async fn list_orders_feed(
         None
     };
 
+    // Start of the current WIB day — scopes processing/shipped/completed to
+    // "state changed today" (see FeedStatus::state_clause).
+    let wib = chrono::FixedOffset::east_opt(crate::batch::WIB_OFFSET_SECS)
+        .expect("WIB offset is valid");
+    let day_start = chrono::Utc::now()
+        .with_timezone(&wib)
+        .date_naive()
+        .and_hms_opt(0, 0, 0)
+        .expect("valid midnight")
+        .and_local_timezone(wib)
+        .unwrap();
+
     let state_clause = status.state_clause();
 
     let select_sql = format!(
@@ -810,6 +833,7 @@ pub async fn list_orders_feed(
         .bind(offset)
         .bind(fresh_window)
         .bind(q_pattern.clone())
+        .bind(day_start)
         .fetch_all(pool)
         .await?;
 
@@ -869,6 +893,7 @@ pub async fn list_orders_feed(
         .bind(offset) // $3 unused in count
         .bind(fresh_window)
         .bind(q_pattern)
+        .bind(day_start)
         .fetch_one(pool)
         .await?;
 
@@ -880,9 +905,14 @@ pub async fn list_orders_feed(
             )::bigint AS "new",
             COUNT(*) FILTER (
                 WHERE state IN ('processing', 'pickup', 'platformProcessing')
+                  AND state_changed_at >= $3
             )::bigint AS "processing",
-            COUNT(*) FILTER (WHERE state = 'shipped')::bigint AS "shipped",
-            COUNT(*) FILTER (WHERE state = 'completed')::bigint AS "completed",
+            COUNT(*) FILTER (
+                WHERE state = 'shipped' AND state_changed_at >= $3
+            )::bigint AS "shipped",
+            COUNT(*) FILTER (
+                WHERE state = 'completed' AND state_changed_at >= $3
+            )::bigint AS "completed",
             COUNT(*) FILTER (WHERE state <> 'archived')::bigint AS "all"
         FROM orders
         WHERE ($1::bigint IS NULL OR account_id = $1)
@@ -890,6 +920,7 @@ pub async fn list_orders_feed(
     )
     .bind(account_id)
     .bind(NEW_FEED_WINDOW)
+    .bind(day_start)
     .fetch_one(pool)
     .await?;
 
