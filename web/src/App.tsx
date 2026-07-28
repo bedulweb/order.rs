@@ -1290,32 +1290,23 @@ function NewOrdersPage() {
           }
           switch (msg.method) {
             case "getPrinter": {
+              // Exactly the live BigSeller web sequence (captured): after the
+              // printer list arrives, ask for the version — nothing else. The
+              // plugin is logged into BigSeller itself and pulls the labels
+              // buffered by checkPrintInfo; no setPuid/changePrinter needed
+              // (sending them makes the plugin loop on getVersion responses).
               const printers = Array.isArray(msg.data) ? (msg.data as string[]) : [];
               const printer =
                 (typeof msg.message === "string" && msg.message) || printers[0] || "(belum dipilih)";
-              if (p.prep) {
-                ws.send(JSON.stringify({ method: "setPuid", params: [p.prep.encryptId, p.prep.uid] }));
-              }
+              ws.send(JSON.stringify({ method: "getVersion" }));
               return { ...p, printer, log };
             }
-            case "setPuid":
-              ws.send(JSON.stringify({ method: "getVersion" }));
-              return { ...p, log };
-            case "getVersion": {
-              // The real BigSeller web confirms the printer right after the
-              // version handshake — this is what tells the plugin to start
-              // pulling the buffered labels and printing.
-              if (p.printer && p.printer !== "(belum dipilih)") {
-                ws.send(JSON.stringify({ method: "changePrinter", params: [p.printer] }));
-              }
+            case "getVersion":
               return {
                 ...p,
                 phase: "printing",
-                log: [...log, `Plugin v${detail} — memilih printer & mulai mencetak…`],
+                log: [...log, `Plugin v${detail} — mengambil label dari BigSeller & mencetak…`],
               };
-            }
-            case "changePrinterResponse":
-              return { ...p, log: [...log, "Printer dikonfirmasi — plugin mengambil label & mencetak…"] };
             case "printProcess":
               return { ...p, log: [...log, "progress: " + JSON.stringify(msg.data).slice(0, 140)] };
             default:
