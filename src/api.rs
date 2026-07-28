@@ -70,6 +70,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/v1/orders/picklist-pdf", post(orders_picklist_pdf))
         .route("/v1/orders/resi-print", post(orders_resi_print))
         .route("/v1/orders/resi-confirm", post(orders_resi_confirm))
+        .route("/v1/orders/resi-unprinted", get(orders_resi_unprinted))
         .route("/v1/reports/in-cancel/daily", get(cancel_report))
         .route("/v1/stats/today", get(stats_today))
         .route("/v1/analytics", get(analytics_overview))
@@ -762,10 +763,30 @@ async fn orders_resi_confirm(
     if body.order_ids.len() > 300 {
         return Err(ApiError::BadRequest("max 300 orders per resi print".into()));
     }
-    let v = crate::resi::confirm_resi_print(&st.base_url, &st.session_path, &body.order_ids)
+    let v = crate::resi::confirm_resi_print(&st.pool, &st.base_url, &st.session_path, &body.order_ids)
         .await
         .map_err(ApiError::from)?;
     Ok(Json(v))
+}
+
+#[derive(Debug, Deserialize)]
+struct ResiUnprintedQuery {
+    account: Option<String>,
+}
+
+/// GET `/v1/orders/resi-unprinted` — internal ids of today's processing
+/// orders whose shipping label is not printed yet (max 300).
+async fn orders_resi_unprinted(
+    State(st): State<ApiState>,
+    headers: HeaderMap,
+    Query(q): Query<ResiUnprintedQuery>,
+) -> std::result::Result<Json<serde_json::Value>, ApiError> {
+    check_auth(&st, &headers)?;
+    let account_id = resolve_account_id(&st.pool, q.account.as_deref()).await?;
+    let ids = crate::store::unprinted_label_ids(&st.pool, account_id)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(json!({ "orderIds": ids, "count": ids.len() })))
 }
 
 /// POST `/v1/orders/picklist-pdf` `{ "orderIds": [...] }` — one pick-list PDF

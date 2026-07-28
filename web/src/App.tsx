@@ -46,6 +46,7 @@ import {
   fetchOrdersFeed,
   fetchSyncProgress,
   fetchTodayStats,
+  fetchUnprintedResiIds,
   formatIdr,
   formatWib,
   getToken,
@@ -1067,7 +1068,14 @@ function NewOrdersPage() {
 
   const orders = useMemo<NewOrder[]>(() => data?.orders ?? [], [data]);
   const counts =
-    data?.counts ?? { new: 0, processing: 0, shipped: 0, completed: 0, all: 0 };
+    data?.counts ?? {
+      new: 0,
+      processing: 0,
+      shipped: 0,
+      completed: 0,
+      all: 0,
+      unprintedLabels: 0,
+    };
   const total = data?.total ?? 0;
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const rangeStart = total === 0 ? 0 : page * PAGE_SIZE + 1;
@@ -1208,8 +1216,8 @@ function NewOrdersPage() {
   const [resiPrint, setResiPrint] = useState<ResiPrintState | null>(null);
   const resiWsRef = useRef<WebSocket | null>(null);
 
-  function startResiPrint() {
-    const ids = [...selectedOrders.keys()];
+  function startResiPrint(idsOverride?: number[]) {
+    const ids = idsOverride ?? [...selectedOrders.keys()];
     if (ids.length === 0) return;
     setResiPrint({
       phase: "preparing",
@@ -1383,6 +1391,20 @@ function NewOrdersPage() {
     resiWsRef.current = null;
     setResiPrint(null);
     void load(true);
+  }
+
+  /** One-click: print every today's processing order whose resi is unprinted. */
+  async function printAllUnprinted() {
+    setError(null);
+    try {
+      const { orderIds } = await fetchUnprintedResiIds();
+      if (orderIds.length === 0) return;
+      startResiPrint(orderIds);
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Gagal mengambil daftar resi belum cetak",
+      );
+    }
   }
 
   // --- On-demand BigSeller sync (Refresh button → progress dialog) ---
@@ -1858,10 +1880,20 @@ function NewOrdersPage() {
                   size="sm"
                   disabled={packing || printing !== null}
                   onClick={() => startResiPrint()}
-                  title="Cetak resi lewat BigSeller Print Plugin (plugin harus berjalan di mesin ini)"
+                  title="Cetak resi order yang dipilih lewat BigSeller Print Plugin"
                 >
                   <Printer className="size-3.5" /> Print resi (
                   {selectedOrders.size})
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={packing || printing !== null || counts.unprintedLabels === 0}
+                  onClick={() => void printAllUnprinted()}
+                  title="Cetak semua resi hari ini yang belum dicetak (plugin harus berjalan di mesin ini)"
+                >
+                  <Printer className="size-3.5" /> Cetak semua belum cetak (
+                  {counts.unprintedLabels})
                 </Button>
                 <Button
                   size="sm"

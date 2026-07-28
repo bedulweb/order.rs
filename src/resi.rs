@@ -173,6 +173,7 @@ pub async fn prepare_resi_print(
 /// after the plugin handshake — without it the buffered labels are never
 /// handed to the plugin and nothing prints.
 pub async fn confirm_resi_print(
+    pool: &sqlx::PgPool,
     base_url: &str,
     session_path: &Path,
     order_ids: &[i64],
@@ -197,6 +198,14 @@ pub async fn confirm_resi_print(
         .await
         .map_err(|e| Error::Other(e.to_string()))?;
     tracing::info!(orders = order_ids.len(), response = %v, "resi print confirmed (job registered for plugin)");
+    // Reflect BigSeller's label mark in our DB immediately (the worker's
+    // next processing sync would catch up within minutes anyway).
+    if v.get("code").and_then(|c| c.as_i64()) == Some(0) {
+        sqlx::query("UPDATE orders SET print_label_mark = 1 WHERE id = ANY($1)")
+            .bind(order_ids.to_vec())
+            .execute(pool)
+            .await?;
+    }
     Ok(v)
 }
 

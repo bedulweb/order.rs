@@ -161,6 +161,8 @@ export type NewOrder = {
   isUrgent: boolean;
   /** Summary List already printed (batch membership and/or BigSeller marks). */
   summaryPrinted: boolean;
+  /** Shipping label (resi) already printed (BigSeller printLabelMark). */
+  labelPrinted: boolean;
   /** Active batch session owning this order (morning/afternoon/urgent), if any. */
   batchSession: string | null;
   amount: string | null;
@@ -177,6 +179,8 @@ export type FeedCounts = {
   shipped: number;
   completed: number;
   all: number;
+  /** Today's processing orders whose resi is not printed yet. */
+  unprintedLabels: number;
 };
 
 export type OrdersFeedResponse = {
@@ -434,6 +438,11 @@ export function confirmResiPrint(orderIds: number[]): Promise<unknown> {
     method: "POST",
     body: JSON.stringify({ orderIds }),
   });
+}
+
+/** Internal ids of today's processing orders whose resi is not printed yet. */
+export function fetchUnprintedResiIds(): Promise<{ orderIds: number[]; count: number }> {
+  return request("/v1/orders/resi-unprinted");
 }
 
 /** One pick-list PDF for an explicit selection — no batch, no claim. */

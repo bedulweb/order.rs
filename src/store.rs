@@ -674,6 +674,8 @@ pub struct NewOrderDto {
     /// Summary List already printed: active batch membership and/or BigSeller
     /// collect/pick print marks (same rule as `order_summary_was_printed`).
     pub summary_printed: bool,
+    /// Shipping label (resi) already printed (BigSeller printLabelMark).
+    pub label_printed: bool,
     /// Session of the active batch owning this order (morning/afternoon/urgent).
     pub batch_session: Option<String>,
     pub amount: Option<String>,
@@ -731,6 +733,8 @@ pub struct FeedCounts {
     pub shipped: i64,
     pub completed: i64,
     pub all: i64,
+    /// Today's processing orders whose shipping label is not printed yet.
+    pub unprinted_labels: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -805,6 +809,7 @@ pub async fn list_orders_feed(
                     WHERE bo.order_id = o.id AND bo.voided_at IS NULL
                 )
             ) AS summary_printed,
+            COALESCE(o.print_label_mark, 0) <> 0 AS label_printed,
             (
                 SELECT b.session
                 FROM batch_orders bo
@@ -864,6 +869,7 @@ pub async fn list_orders_feed(
                 carrier_name.as_deref(),
             ),
             summary_printed: row.get("summary_printed"),
+            label_printed: row.get("label_printed"),
             batch_session: row.get("batch_session"),
             amount: opt_numeric(&row, "amount"),
             item_total_num: row.get("item_total_num"),
@@ -913,7 +919,12 @@ pub async fn list_orders_feed(
             COUNT(*) FILTER (
                 WHERE state = 'completed' AND state_changed_at >= $3
             )::bigint AS "completed",
-            COUNT(*) FILTER (WHERE state <> 'archived')::bigint AS "all"
+            COUNT(*) FILTER (WHERE state <> 'archived')::bigint AS "all",
+            COUNT(*) FILTER (
+                WHERE state IN ('processing', 'pickup', 'platformProcessing')
+                  AND state_changed_at >= $3
+                  AND COALESCE(print_label_mark, 0) = 0
+            )::bigint AS "unprinted_labels"
         FROM orders
         WHERE ($1::bigint IS NULL OR account_id = $1)
         "#,
@@ -932,9 +943,41 @@ pub async fn list_orders_feed(
             shipped: counts_row.get("shipped"),
             completed: counts_row.get("completed"),
             all: counts_row.get("all"),
+            unprinted_labels: counts_row.get("unprinted_labels"),
         },
         orders,
     })
+}
+
+/// Internal ids of today's processing orders whose resi is not printed yet —
+/// the target of "cetak semua resi belum cetak".
+pub async fn unprinted_label_ids(pool: &PgPool, account_id: Option<i64>) -> Result<Vec<i64>> {
+    let wib = chrono::FixedOffset::east_opt(crate::batch::WIB_OFFSET_SECS)
+        .expect("WIB offset is valid");
+    let day_start = chrono::Utc::now()
+        .with_timezone(&wib)
+        .date_naive()
+        .and_hms_opt(0, 0, 0)
+        .expect("valid midnight")
+        .and_local_timezone(wib)
+        .unwrap();
+    let rows = sqlx::query(
+        r#"
+        SELECT id
+        FROM orders
+        WHERE state IN ('processing', 'pickup', 'platformProcessing')
+          AND state_changed_at >= $2
+          AND COALESCE(print_label_mark, 0) = 0
+          AND ($1::bigint IS NULL OR account_id = $1)
+        ORDER BY ordered_at ASC NULLS LAST, id ASC
+        LIMIT 300
+        "#,
+    )
+    .bind(account_id)
+    .bind(day_start)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.iter().map(|r| r.get("id")).collect())
 }
 
 async fn load_new_order_items(
