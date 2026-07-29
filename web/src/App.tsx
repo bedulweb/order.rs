@@ -796,6 +796,7 @@ const SESSION_LABEL: Record<BatchSession, string> = {
 };
 
 const PAGE_SIZE = 50;
+const URGENT_FILTER_STORAGE_KEY = "orders_feed_urgent_only";
 
 const FEED_TABS: { id: FeedStatus; label: string }[] = [
   { id: "new", label: "Baru" },
@@ -985,6 +986,13 @@ function NewOrdersPage() {
   const [packResult, setPackResult] = useState<PackResult | null>(null);
 
   const [statusTab, setStatusTab] = useState<FeedStatus>("new");
+  const [urgentOnly, setUrgentOnly] = useState(() => {
+    try {
+      return localStorage.getItem(URGENT_FILTER_STORAGE_KEY) === "true";
+    } catch {
+      return false;
+    }
+  });
   const [page, setPage] = useState(0);
   const [searchInput, setSearchInput] = useState("");
   const [appliedQ, setAppliedQ] = useState("");
@@ -1008,11 +1016,17 @@ function NewOrdersPage() {
         const resp = await fetchOrdersFeed({
           status: statusTab,
           q: appliedQ || undefined,
+          urgent: urgentOnly,
           limit: PAGE_SIZE,
           offset: page * PAGE_SIZE,
         });
         // Flash newly arrived orders (unfiltered new tab only).
-        if (statusTab === "new" && appliedQ === "" && page === 0) {
+        if (
+          statusTab === "new" &&
+          appliedQ === "" &&
+          !urgentOnly &&
+          page === 0
+        ) {
           const ids = resp.orders.map((o) => o.orderId);
           const prev = knownIds.current;
           if (prev) {
@@ -1033,7 +1047,7 @@ function NewOrdersPage() {
         setLoading(false);
       }
     },
-    [statusTab, appliedQ, page],
+    [statusTab, appliedQ, urgentOnly, page],
   );
 
   useEffect(() => {
@@ -1102,6 +1116,20 @@ function NewOrdersPage() {
     () => orders.filter((o) => !o.summaryPrinted).length,
     [orders],
   );
+
+  function toggleUrgentOnly() {
+    setUrgentOnly((current) => {
+      const next = !current;
+      try {
+        localStorage.setItem(URGENT_FILTER_STORAGE_KEY, String(next));
+      } catch {
+        // The preference still works for this session when storage is unavailable.
+      }
+      setPage(0);
+      setSelectedOrders(new Map());
+      return next;
+    });
+  }
 
   function toggleOrder(order: NewOrder) {
     setSelectedOrders((prev) => {
@@ -1584,6 +1612,22 @@ function NewOrdersPage() {
           />
           <Kbd className="absolute top-1/2 right-2 -translate-y-1/2">/</Kbd>
         </div>
+
+        <button
+          type="button"
+          onClick={toggleUrgentOnly}
+          aria-pressed={urgentOnly}
+          className={cn(
+            "inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium transition-colors",
+            urgentOnly
+              ? "border-warning/50 bg-warning/12 text-warning-foreground"
+              : "border-input bg-popover text-muted-foreground hover:bg-accent/50",
+          )}
+          title="Tampilkan hanya order urgent"
+        >
+          <Zap className="size-3.5" />
+          Urgent
+        </button>
 
           {lastUpdated && (
             <span className="hidden text-muted-foreground text-xs sm:inline">

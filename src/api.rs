@@ -651,6 +651,8 @@ struct NewOrdersQuery {
     status: Option<String>,
     /// Search on platform order id / buyer.
     q: Option<String>,
+    /// Restrict results to orders with urgent shipping.
+    urgent: Option<bool>,
     offset: Option<i64>,
 }
 
@@ -677,6 +679,7 @@ async fn orders_new(
         account_id,
         status,
         q.q.as_deref(),
+        q.urgent.unwrap_or(false),
         q.limit.unwrap_or(50),
         q.offset.unwrap_or(0),
     )

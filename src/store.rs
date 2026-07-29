@@ -760,13 +760,15 @@ const NEW_FEED_WINDOW: &str = "15 minutes";
 
 /// Orders feed mirroring BigSeller's status tabs (new / processing / shipped
 /// / completed / all), newest first, server-paginated, with optional search
-/// on order number / buyer. The `new` tab keeps the freshness window so it
-/// matches BigSeller's live New Orders list; other tabs are plain state.
+/// on order number / buyer and urgent-only filtering. The `new` tab keeps the
+/// freshness window so it matches BigSeller's live New Orders list; other tabs
+/// are plain state.
 pub async fn list_orders_feed(
     pool: &PgPool,
     account_id: Option<i64>,
     status: FeedStatus,
     q: Option<&str>,
+    urgent_only: bool,
     limit: i64,
     offset: i64,
 ) -> Result<OrdersFeedResponse> {
@@ -831,6 +833,13 @@ pub async fn list_orders_feed(
               OR o.contact_person ILIKE $5
           )
           AND ($1::bigint IS NULL OR o.account_id = $1)
+          AND (
+              $7::bool = false
+              OR LOWER(CONCAT_WS(' ', o.buyer_shipping_carrier, o.shipment_provider, o.shipping_carrier_name)) LIKE ANY(ARRAY[
+                  '%instant%', '%sameday%', '%same day%', '%same-day%', '%prioritas%',
+                  '%gojek%', '%gosend%', '%grab%', '%paxel%'
+              ])
+          )
         ORDER BY o.ordered_at DESC NULLS LAST, o.id DESC
         LIMIT $2 OFFSET $3
         "#
@@ -842,6 +851,7 @@ pub async fn list_orders_feed(
         .bind(fresh_window)
         .bind(q_pattern.clone())
         .bind(day_start)
+        .bind(urgent_only)
         .fetch_all(pool)
         .await?;
 
@@ -894,6 +904,13 @@ pub async fn list_orders_feed(
               OR o.contact_person ILIKE $5
           )
           AND ($1::bigint IS NULL OR o.account_id = $1)
+          AND (
+              $7::bool = false
+              OR LOWER(CONCAT_WS(' ', o.buyer_shipping_carrier, o.shipment_provider, o.shipping_carrier_name)) LIKE ANY(ARRAY[
+                  '%instant%', '%sameday%', '%same day%', '%same-day%', '%prioritas%',
+                  '%gojek%', '%gosend%', '%grab%', '%paxel%'
+              ])
+          )
         "#
     );
     let total: i64 = sqlx::query_scalar(&count_sql)
@@ -903,6 +920,7 @@ pub async fn list_orders_feed(
         .bind(fresh_window)
         .bind(q_pattern)
         .bind(day_start)
+        .bind(urgent_only)
         .fetch_one(pool)
         .await?;
 
@@ -930,11 +948,19 @@ pub async fn list_orders_feed(
             )::bigint AS "unprinted_labels"
         FROM orders
         WHERE ($1::bigint IS NULL OR account_id = $1)
+          AND (
+              $4::bool = false
+              OR LOWER(CONCAT_WS(' ', buyer_shipping_carrier, shipment_provider, shipping_carrier_name)) LIKE ANY(ARRAY[
+                  '%instant%', '%sameday%', '%same day%', '%same-day%', '%prioritas%',
+                  '%gojek%', '%gosend%', '%grab%', '%paxel%'
+              ])
+          )
         "#,
     )
     .bind(account_id)
     .bind(NEW_FEED_WINDOW)
     .bind(day_start)
+    .bind(urgent_only)
     .fetch_one(pool)
     .await?;
 

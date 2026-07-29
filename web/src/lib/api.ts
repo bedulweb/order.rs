@@ -193,12 +193,14 @@ export type OrdersFeedResponse = {
 export function fetchOrdersFeed(opts: {
   status: FeedStatus;
   q?: string;
+  urgent?: boolean;
   limit?: number;
   offset?: number;
 }): Promise<OrdersFeedResponse> {
   const params = new URLSearchParams();
   params.set("status", opts.status);
   if (opts.q?.trim()) params.set("q", opts.q.trim());
+  if (opts.urgent) params.set("urgent", "true");
   params.set("limit", String(opts.limit ?? 50));
   params.set("offset", String(opts.offset ?? 0));
   return request(`/v1/orders/new?${params.toString()}`);
