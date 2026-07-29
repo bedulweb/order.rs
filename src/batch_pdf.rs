@@ -45,8 +45,10 @@ pub struct SummarySkuRow {
     pub variant: String,
     pub qty: i32,
     pub image_url: Option<String>,
-    /// package code `*last4` → qty
+    /// package code `*last4` → total qty
     pub packages: BTreeMap<String, i32>,
+    /// package code `*last4` → urgent/instant qty
+    pub instant_packages: BTreeMap<String, i32>,
 }
 
 /// Aggregate order lines into SKU rows (full SKU key; empty sku falls back to name).
@@ -98,9 +100,13 @@ pub fn aggregate_summary_rows(lines: &[PdfOrderLine]) -> Vec<SummarySkuRow> {
                 qty: 0,
                 image_url: image_url.clone(),
                 packages: BTreeMap::new(),
+                instant_packages: BTreeMap::new(),
             });
             entry.qty += qty;
             *entry.packages.entry(code.clone()).or_insert(0) += qty;
+            if line.is_urgent {
+                *entry.instant_packages.entry(code.clone()).or_insert(0) += qty;
+            }
             if entry.name == "(no name)" && name != "(no name)" {
                 entry.name = name;
             }
@@ -462,11 +468,13 @@ pub async fn render_batch_pdf(
     }
 
     for row in &rows {
-        let pkg_parts: Vec<String> = row
-            .packages
-            .iter()
-            .map(|(code, q)| format!("{code} : {q}"))
-            .collect();
+        let mut pkg_parts = Vec::new();
+        for (code, q) in &row.packages {
+            pkg_parts.push(format!("{code} : {q}"));
+            if let Some(instant_qty) = row.instant_packages.get(code) {
+                pkg_parts.push(format!("        instant {instant_qty}"));
+            }
+        }
         let pkg_lines = wrap_parts(&pkg_parts, 7.5, max_name_w);
         let n_pkg = pkg_lines.len();
 
@@ -597,6 +605,15 @@ mod tests {
     }
 
     #[test]
+    fn aggregate_tracks_instant_qty_under_matching_package() {
+        let mut instant = line("ORDER2672", "SKU-1", 1);
+        instant.is_urgent = true;
+        let rows = aggregate_summary_rows(&[line("ORDER2672", "SKU-1", 2), instant]);
+        assert_eq!(rows[0].packages.get("*2672"), Some(&3));
+        assert_eq!(rows[0].instant_packages.get("*2672"), Some(&1));
+    }
+
+    #[test]
     fn package_code_last4() {
         assert_eq!(package_code("260715PS7HRGC0"), "*RGC0");
         assert_eq!(package_code("AB"), "*AB");
@@ -647,6 +664,8 @@ mod tests {
         assert_eq!(rows[0].qty, 3);
         assert_eq!(rows[0].packages.get("*BBBB"), Some(&2));
         assert_eq!(rows[0].packages.get("*YYYY"), Some(&1));
+        assert_eq!(rows[0].instant_packages.get("*BBBB"), None);
+        assert_eq!(rows[0].instant_packages.get("*YYYY"), None);
         assert_eq!(rows[0].variant, "Merah,M");
         assert_eq!(
             rows[0].image_url.as_deref(),
