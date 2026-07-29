@@ -653,6 +653,8 @@ struct NewOrdersQuery {
     q: Option<String>,
     /// Restrict results to orders with urgent shipping.
     urgent: Option<bool>,
+    /// Restrict results to orders whose summary has not been printed.
+    unprinted_summary: Option<bool>,
     offset: Option<i64>,
 }
 
@@ -680,6 +682,7 @@ async fn orders_new(
         status,
         q.q.as_deref(),
         q.urgent.unwrap_or(false),
+        q.unprinted_summary.unwrap_or(false),
         q.limit.unwrap_or(50),
         q.offset.unwrap_or(0),
     )

@@ -797,6 +797,7 @@ const SESSION_LABEL: Record<BatchSession, string> = {
 
 const PAGE_SIZE = 50;
 const URGENT_FILTER_STORAGE_KEY = "orders_feed_urgent_only";
+const UNPRINTED_SUMMARY_FILTER_STORAGE_KEY = "orders_feed_unprinted_summary_only";
 
 const FEED_TABS: { id: FeedStatus; label: string }[] = [
   { id: "new", label: "Baru" },
@@ -993,6 +994,13 @@ function NewOrdersPage() {
       return false;
     }
   });
+  const [unprintedSummaryOnly, setUnprintedSummaryOnly] = useState(() => {
+    try {
+      return localStorage.getItem(UNPRINTED_SUMMARY_FILTER_STORAGE_KEY) === "true";
+    } catch {
+      return false;
+    }
+  });
   const [page, setPage] = useState(0);
   const [searchInput, setSearchInput] = useState("");
   const [appliedQ, setAppliedQ] = useState("");
@@ -1017,6 +1025,7 @@ function NewOrdersPage() {
           status: statusTab,
           q: appliedQ || undefined,
           urgent: urgentOnly,
+          unprintedSummary: unprintedSummaryOnly,
           limit: PAGE_SIZE,
           offset: page * PAGE_SIZE,
         });
@@ -1025,6 +1034,7 @@ function NewOrdersPage() {
           statusTab === "new" &&
           appliedQ === "" &&
           !urgentOnly &&
+          !unprintedSummaryOnly &&
           page === 0
         ) {
           const ids = resp.orders.map((o) => o.orderId);
@@ -1047,7 +1057,7 @@ function NewOrdersPage() {
         setLoading(false);
       }
     },
-    [statusTab, appliedQ, urgentOnly, page],
+    [statusTab, appliedQ, urgentOnly, unprintedSummaryOnly, page],
   );
 
   useEffect(() => {
@@ -1122,6 +1132,20 @@ function NewOrdersPage() {
       const next = !current;
       try {
         localStorage.setItem(URGENT_FILTER_STORAGE_KEY, String(next));
+      } catch {
+        // The preference still works for this session when storage is unavailable.
+      }
+      setPage(0);
+      setSelectedOrders(new Map());
+      return next;
+    });
+  }
+
+  function toggleUnprintedSummaryOnly() {
+    setUnprintedSummaryOnly((current) => {
+      const next = !current;
+      try {
+        localStorage.setItem(UNPRINTED_SUMMARY_FILTER_STORAGE_KEY, String(next));
       } catch {
         // The preference still works for this session when storage is unavailable.
       }
@@ -1628,16 +1652,22 @@ function NewOrdersPage() {
           <Zap className="size-3.5" />
           Urgent
         </button>
-
-          {lastUpdated && (
-            <span className="hidden text-muted-foreground text-xs sm:inline">
-              Diperbarui{" "}
-              {lastUpdated.toLocaleTimeString("id-ID", {
-                timeZone: "Asia/Jakarta",
-              })}{" "}
-              WIB
-            </span>
+        <button
+          type="button"
+          onClick={toggleUnprintedSummaryOnly}
+          aria-pressed={unprintedSummaryOnly}
+          className={cn(
+            "inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium transition-colors",
+            unprintedSummaryOnly
+              ? "border-primary/50 bg-primary/10 text-primary"
+              : "border-input bg-popover text-muted-foreground hover:bg-accent/50",
           )}
+          title="Tampilkan order yang summary-nya belum diprint"
+        >
+          <Printer className="size-3.5" />
+          Belum print summary
+        </button>
+
           <button
             type="button"
             onClick={() => setAutoRefresh((v) => !v)}
@@ -1788,8 +1818,8 @@ function NewOrdersPage() {
             </TableBody>
           </Table>
 
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <p className="text-muted-foreground text-xs">
+          <div className="grid grid-cols-1 items-center gap-3 sm:grid-cols-[1fr_auto_1fr]">
+            <p className="text-muted-foreground text-xs sm:text-left">
               Item{" "}
               <span className="font-medium text-foreground tabular-nums">
                 {rangeStart}
@@ -1803,7 +1833,16 @@ function NewOrdersPage() {
                 {total}
               </span>
             </p>
-            <div className="flex items-center gap-1">
+            {lastUpdated && (
+              <span className="text-center text-muted-foreground text-xs">
+                Diperbarui{" "}
+                {lastUpdated.toLocaleTimeString("id-ID", {
+                  timeZone: "Asia/Jakarta",
+                })}{" "}
+                WIB
+              </span>
+            )}
+            <div className="flex items-center gap-1 sm:justify-self-end">
               <Button
                 size="xs"
                 variant="outline"

@@ -194,6 +194,7 @@ export function fetchOrdersFeed(opts: {
   status: FeedStatus;
   q?: string;
   urgent?: boolean;
+  unprintedSummary?: boolean;
   limit?: number;
   offset?: number;
 }): Promise<OrdersFeedResponse> {
@@ -201,6 +202,7 @@ export function fetchOrdersFeed(opts: {
   params.set("status", opts.status);
   if (opts.q?.trim()) params.set("q", opts.q.trim());
   if (opts.urgent) params.set("urgent", "true");
+  if (opts.unprintedSummary) params.set("unprinted_summary", "true");
   params.set("limit", String(opts.limit ?? 50));
   params.set("offset", String(opts.offset ?? 0));
   return request(`/v1/orders/new?${params.toString()}`);

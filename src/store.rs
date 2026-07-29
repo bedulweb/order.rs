@@ -769,6 +769,7 @@ pub async fn list_orders_feed(
     status: FeedStatus,
     q: Option<&str>,
     urgent_only: bool,
+    unprinted_summary_only: bool,
     limit: i64,
     offset: i64,
 ) -> Result<OrdersFeedResponse> {
@@ -840,6 +841,17 @@ pub async fn list_orders_feed(
                   '%gojek%', '%gosend%', '%grab%', '%paxel%'
               ])
           )
+          AND (
+              $8::bool = false
+              OR NOT (
+                  COALESCE(o.print_collect_mark, 0) <> 0
+                  OR COALESCE(o.print_pick_list_mark, 0) <> 0
+                  OR EXISTS (
+                      SELECT 1 FROM batch_orders bo
+                      WHERE bo.order_id = o.id AND bo.voided_at IS NULL
+                  )
+              )
+          )
         ORDER BY o.ordered_at DESC NULLS LAST, o.id DESC
         LIMIT $2 OFFSET $3
         "#
@@ -852,6 +864,7 @@ pub async fn list_orders_feed(
         .bind(q_pattern.clone())
         .bind(day_start)
         .bind(urgent_only)
+        .bind(unprinted_summary_only)
         .fetch_all(pool)
         .await?;
 
@@ -911,6 +924,17 @@ pub async fn list_orders_feed(
                   '%gojek%', '%gosend%', '%grab%', '%paxel%'
               ])
           )
+          AND (
+              $8::bool = false
+              OR NOT (
+                  COALESCE(o.print_collect_mark, 0) <> 0
+                  OR COALESCE(o.print_pick_list_mark, 0) <> 0
+                  OR EXISTS (
+                      SELECT 1 FROM batch_orders bo
+                      WHERE bo.order_id = o.id AND bo.voided_at IS NULL
+                  )
+              )
+          )
         "#
     );
     let total: i64 = sqlx::query_scalar(&count_sql)
@@ -921,6 +945,7 @@ pub async fn list_orders_feed(
         .bind(q_pattern)
         .bind(day_start)
         .bind(urgent_only)
+        .bind(unprinted_summary_only)
         .fetch_one(pool)
         .await?;
 
@@ -955,12 +980,24 @@ pub async fn list_orders_feed(
                   '%gojek%', '%gosend%', '%grab%', '%paxel%'
               ])
           )
+          AND (
+              $5::bool = false
+              OR NOT (
+                  COALESCE(print_collect_mark, 0) <> 0
+                  OR COALESCE(print_pick_list_mark, 0) <> 0
+                  OR EXISTS (
+                      SELECT 1 FROM batch_orders bo
+                      WHERE bo.order_id = orders.id AND bo.voided_at IS NULL
+                  )
+              )
+          )
         "#,
     )
     .bind(account_id)
     .bind(NEW_FEED_WINDOW)
     .bind(day_start)
     .bind(urgent_only)
+    .bind(unprinted_summary_only)
     .fetch_one(pool)
     .await?;
 
