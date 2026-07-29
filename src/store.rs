@@ -714,8 +714,11 @@ impl FeedStatus {
     fn state_clause(self) -> &'static str {
         match self {
             Self::New => "o.state = 'new'",
+            // platformProcessing excluded: BigSeller counts it separately
+            // ("Platform Processing") — those orders are already handed to the
+            // platform's logistics and need no seller action.
             Self::Processing => {
-                "o.state IN ('processing', 'pickup', 'platformProcessing') AND o.state_changed_at >= $6"
+                "o.state IN ('processing', 'pickup') AND o.state_changed_at >= $6"
             }
             Self::Shipped => "o.state = 'shipped' AND o.state_changed_at >= $6",
             Self::Completed => "o.state = 'completed' AND o.state_changed_at >= $6",
@@ -910,7 +913,7 @@ pub async fn list_orders_feed(
                 WHERE state = 'new' AND synced_at > now() - $2::interval
             )::bigint AS "new",
             COUNT(*) FILTER (
-                WHERE state IN ('processing', 'pickup', 'platformProcessing')
+                WHERE state IN ('processing', 'pickup')
                   AND state_changed_at >= $3
             )::bigint AS "processing",
             COUNT(*) FILTER (
@@ -921,7 +924,7 @@ pub async fn list_orders_feed(
             )::bigint AS "completed",
             COUNT(*) FILTER (WHERE state <> 'archived')::bigint AS "all",
             COUNT(*) FILTER (
-                WHERE state IN ('processing', 'pickup', 'platformProcessing')
+                WHERE state IN ('processing', 'pickup')
                   AND state_changed_at >= $3
                   AND COALESCE(print_label_mark, 0) = 0
             )::bigint AS "unprinted_labels"
@@ -965,7 +968,7 @@ pub async fn unprinted_label_ids(pool: &PgPool, account_id: Option<i64>) -> Resu
         r#"
         SELECT id
         FROM orders
-        WHERE state IN ('processing', 'pickup', 'platformProcessing')
+        WHERE state IN ('processing', 'pickup')
           AND state_changed_at >= $2
           AND COALESCE(print_label_mark, 0) = 0
           AND ($1::bigint IS NULL OR account_id = $1)
