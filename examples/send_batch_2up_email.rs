@@ -1,8 +1,11 @@
 //! Generate a 2-up (two pages per A4 sheet) Summary List PDF from the real
 //! order backlog in Postgres and email it as an attachment.
 //!
+//! Recipient comes from `RESEND_TO` (env) or the first CLI arg.
+//!
 //! ```bash
-//! cargo run --release --example send_batch_2up_email -- ujangas1908@gmail.com
+//! cargo run --release --example send_batch_2up_email
+//! cargo run --release --example send_batch_2up_email -- someone@example.com
 //! ```
 
 use orders::batch::{self, BatchSession, PdfOrderLine};
@@ -15,10 +18,15 @@ use uuid::Uuid;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = dotenvy::dotenv();
-    let to = std::env::args()
-        .nth(1)
-        .ok_or("usage: send_batch_2up_email <to>")?;
     let cfg = Config::from_env()?;
+    let to = match std::env::args().nth(1) {
+        Some(t) => t,
+        None => cfg
+            .smtp
+            .as_ref()
+            .and_then(|e| e.to.clone())
+            .ok_or("no recipient: set RESEND_TO or pass <to> arg")?,
+    };
     let pool = db::connect(cfg.require_database_url()?).await?;
 
     // Real backlog: eligible orders (state=new, not in any active batch).

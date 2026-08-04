@@ -11,6 +11,9 @@ use serde_json::json;
 pub struct SmtpConfig {
     pub api_key: String,
     pub from: String,
+    /// Default recipient (e.g. the Epson email-print address). Used by the
+    /// scheduled batch-pagi email workflow; examples may override.
+    pub to: Option<String>,
 }
 
 impl SmtpConfig {
@@ -22,7 +25,10 @@ impl SmtpConfig {
             .ok()
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "Order.rs <noreply@obayito.com>".into());
-        Some(Self { api_key, from })
+        let to = std::env::var("RESEND_TO")
+            .ok()
+            .filter(|s| !s.is_empty());
+        Some(Self { api_key, from, to })
     }
 }
 
