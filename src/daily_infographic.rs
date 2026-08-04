@@ -149,7 +149,7 @@ fn pct_i64(current: i64, previous: i64) -> Option<f64> {
     pct(current as f64, previous as f64)
 }
 
-fn fmt_rp(x: f64) -> String {
+pub fn fmt_rp(x: f64) -> String {
     let n = x.round() as i64;
     let s = n.abs().to_string();
     let mut out = String::new();

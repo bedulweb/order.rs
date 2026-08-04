@@ -166,6 +166,10 @@ Show `message` as-is in the app UI.
 
 - Every `SYNC_NEW_INTERVAL_SECS` (default 60): pull `status=new`, upsert, enqueue `order.created` on first see.
 - **Working hours** (`WORK_HOUR_START`/`WORK_HOUR_END`, default `07:50`/`17:00` WIB): urgent/instant `order.created` notifications are only delivered inside the window. Events arriving outside it are deferred in the outbox (`available_at` pushed to the next work start) and sent automatically when the window opens — so the ops group isn't pinged overnight.
+- **Scheduled jobs** (once per WIB day, on the worker tick):
+  - `BATCH_PAGI_HOUR` (default `07:50`): claim the backlog into a morning batch, render the **2-up Summary List PDF** (two A4 pages per sheet), auto-mark it printed in BigSeller, and email it to `RESEND_TO` (e.g. `printer@print.epsonconnect.com`).
+  - `REKAP_HOUR` (default `17:00`): send the daily infographic PNG to the WhatsApp group.
+  - Cancel printed: hari-ini cancel (ordered_at WIB) whose Summary List was already printed → cancel card to the WhatsApp group, right after the cancel sync window.
 - After each successful new pass: reconcile stale state — rows still `state=new` whose `synced_at` fell behind (i.e. absent from the bucket) are looked up via all-order search and healed to their true state (shipped/completed/canceled). Newest-stale first, paced ~1.2s between searches, capped per cycle by `RECONCILE_CAP` (default 15; raise temporarily to drain a backlog faster), so the DB converges to BigSeller's truth without pulling large buckets.
 - Once per local day at `CANCEL_HOUR_LOCAL`:`CANCEL_MINUTE_LOCAL` (default 17:00): pull cancel-related buckets.
 - On BigSeller auth expiry (code `2001`): auto re-login when `AUTO_RELOGIN=true`.

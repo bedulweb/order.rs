@@ -70,7 +70,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let o = notify::load_cancel_order(&pool, id).await?;
         println!(
             "  + {} · {} · printed ({} items)",
-            o.platform_order_id, o.platform, o.items.len()
+            o.platform_order_id,
+            o.platform,
+            o.items.len()
         );
         sent.push(o);
     }

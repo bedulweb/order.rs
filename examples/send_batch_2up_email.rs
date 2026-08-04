@@ -8,7 +8,7 @@
 //! cargo run --release --example send_batch_2up_email -- someone@example.com
 //! ```
 
-use orders::batch::{self, BatchSession, BacklogOrder, PdfOrderLine};
+use orders::batch::{self, BacklogOrder, BatchSession, PdfOrderLine};
 use orders::batch_pdf::render_batch_pdf_2up;
 use orders::config::Config;
 use orders::db;
@@ -31,10 +31,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let to = args
         .iter()
         .enumerate()
-        .filter(|(i, a)| {
-            !a.starts_with("--")
-                && !(*i > 0 && args[*i - 1] == "--count")
-        })
+        .filter(|(i, a)| !a.starts_with("--") && !(*i > 0 && args[*i - 1] == "--count"))
         .map(|(_, a)| a.clone())
         .next()
         .or_else(|| cfg.smtp.as_ref().and_then(|e| e.to.clone()))
@@ -68,8 +65,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let buyer: Option<String> = r.get("buyer_shipping_carrier");
                     let ship: Option<String> = r.get("shipment_provider");
                     let name: Option<String> = r.get("shipping_carrier_name");
-                    let carrier = batch::carrier_display(buyer.as_deref(), ship.as_deref(), name.as_deref());
-                    let is_urgent = batch::is_urgent_carrier(buyer.as_deref(), ship.as_deref(), name.as_deref());
+                    let carrier =
+                        batch::carrier_display(buyer.as_deref(), ship.as_deref(), name.as_deref());
+                    let is_urgent = batch::is_urgent_carrier(
+                        buyer.as_deref(),
+                        ship.as_deref(),
+                        name.as_deref(),
+                    );
                     BacklogOrder {
                         order_id: r.get("id"),
                         platform_order_id: r.get("platform_order_id"),
@@ -89,7 +91,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if orders.is_empty() {
         return Err("no orders found".into());
     }
-    println!("orders used={} (backlog total={} urgent={})", orders.len(), backlog.total, backlog.urgent_count);
+    println!(
+        "orders used={} (backlog total={} urgent={})",
+        orders.len(),
+        backlog.total,
+        backlog.urgent_count
+    );
 
     // Load line items for those orders, then build the PDF lines like
     // batch.rs::finalize_batch does.
@@ -103,7 +110,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             platform: o.platform.clone(),
             carrier: o.carrier.clone().unwrap_or_else(|| "-".into()),
             is_urgent: o.is_urgent,
-            ordered_at_wib: o.ordered_at.map(batch::format_wib).unwrap_or_else(|| "-".into()),
+            ordered_at_wib: o
+                .ordered_at
+                .map(batch::format_wib)
+                .unwrap_or_else(|| "-".into()),
             items: items_map.get(&o.order_id).cloned().unwrap_or_default(),
         })
         .collect();
@@ -130,7 +140,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let email_cfg = cfg.smtp.as_ref().ok_or("RESEND_API_KEY not set")?;
     let subject = format!("Summary List 2-up — {order_count} pesanan · {n_sku} item");
     // Empty body: Epson Email Print prints the attachment, not the body text.
-    let msg_id = email::send_pdf_only(email_cfg, &to, &subject, &bytes, "summary-list-2up.pdf").await?;
+    let msg_id =
+        email::send_pdf_only(email_cfg, &to, &subject, &bytes, "summary-list-2up.pdf").await?;
     println!("email sent msg_id={msg_id}");
     Ok(())
 }

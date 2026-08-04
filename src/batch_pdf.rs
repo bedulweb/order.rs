@@ -403,7 +403,16 @@ pub async fn render_batch_pdf(
     _urgent_count: i32,
     lines: &[PdfOrderLine],
 ) -> Result<Vec<u8>> {
-    render_batch_pdf_two_up(batch_id, session, created_wib, order_count, _urgent_count, lines, TwoUp::No).await
+    render_batch_pdf_two_up(
+        batch_id,
+        session,
+        created_wib,
+        order_count,
+        _urgent_count,
+        lines,
+        TwoUp::No,
+    )
+    .await
 }
 
 /// Same as [`render_batch_pdf`] but lays the content out in **two columns per
@@ -417,7 +426,16 @@ pub async fn render_batch_pdf_2up(
     urgent_count: i32,
     lines: &[PdfOrderLine],
 ) -> Result<Vec<u8>> {
-    render_batch_pdf_two_up(batch_id, session, created_wib, order_count, urgent_count, lines, TwoUp::Yes).await
+    render_batch_pdf_two_up(
+        batch_id,
+        session,
+        created_wib,
+        order_count,
+        urgent_count,
+        lines,
+        TwoUp::Yes,
+    )
+    .await
 }
 
 async fn render_batch_pdf_two_up(
@@ -450,7 +468,7 @@ async fn render_batch_pdf_two_up(
     // A4 → A5 scale (1/√2); 1.0 in single-page mode.
     let scale: f32 = match two_up {
         TwoUp::No => 1.0,
-        TwoUp::Yes => 0.70710678,
+        TwoUp::Yes => std::f32::consts::FRAC_1_SQRT_2,
     };
     // Sub-page width in points (A5 portrait = 148.5 mm), used as CTM translate.
     let sub_w_pt: f32 = match two_up {
@@ -458,7 +476,8 @@ async fn render_batch_pdf_two_up(
         TwoUp::Yes => 148.5 * 72.0 / 25.4,
     };
 
-    let (doc, page1, layer1) = PdfDocument::new("Summary List", Mm(sheet_w), Mm(sheet_h), "Layer 1");
+    let (doc, page1, layer1) =
+        PdfDocument::new("Summary List", Mm(sheet_w), Mm(sheet_h), "Layer 1");
     let font = doc
         .add_builtin_font(BuiltinFont::Helvetica)
         .map_err(|e| Error::Other(format!("pdf font: {e}")))?;
@@ -525,7 +544,9 @@ async fn render_batch_pdf_two_up(
             let layer = layer_of(doc, st);
             layer.save_graphics_state();
             let tx = if st.col == 0 { 0.0 } else { sub_w_pt };
-            layer.set_ctm(printpdf::CurTransMat::Raw([scale, 0.0, 0.0, scale, tx, 0.0]));
+            layer.set_ctm(printpdf::CurTransMat::Raw([
+                scale, 0.0, 0.0, scale, tx, 0.0,
+            ]));
         }
         draw_header(doc, st, font, font_bold, title, meta);
     };
@@ -656,7 +677,9 @@ async fn render_batch_pdf_two_up(
             let layer = layer_of(&doc, st);
             layer.save_graphics_state();
             let tx = if st.col == 0 { 0.0 } else { sub_w_pt };
-            layer.set_ctm(printpdf::CurTransMat::Raw([scale, 0.0, 0.0, scale, tx, 0.0]));
+            layer.set_ctm(printpdf::CurTransMat::Raw([
+                scale, 0.0, 0.0, scale, tx, 0.0,
+            ]));
         }
         draw_footer(&doc, st, i + 1, &font, &print_stamp);
         if two_up == TwoUp::Yes {

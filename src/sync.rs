@@ -891,12 +891,21 @@ pub async fn run_worker(pool: PgPool, cfg: Config, app_cfg: WorkerConfig) -> Res
     };
 
     let mut state = WorkerState {
-        cfg,
+        cfg: cfg.clone(),
         app_cfg: app_cfg.clone(),
         pool: pool.clone(),
         api,
         account: account.clone(),
         ocr: None,
+    };
+
+    // Scheduled ops jobs (batch pagi → email printer, rekap sore, cancel printed).
+    let mut scheduler = crate::scheduler::Scheduler {
+        pool: pool.clone(),
+        cfg,
+        ran_batch_pagi_day: None,
+        ran_rekap_day: None,
+        ran_cancel_printed_day: None,
     };
 
     let ctx = SyncContext {
@@ -973,6 +982,11 @@ pub async fn run_worker(pool: PgPool, cfg: Config, app_cfg: WorkerConfig) -> Res
 
         if let Err(e) = drain_outbox(&state.pool, &state.app_cfg).await {
             warn!(error = %e, "outbox drain failed");
+        }
+
+        // Scheduled ops jobs (batch pagi, rekap sore, cancel printed) — WIB clock.
+        if let Err(e) = crate::scheduler::tick(&mut scheduler).await {
+            warn!(error = %e, "scheduler tick failed");
         }
 
         let now = Local::now();

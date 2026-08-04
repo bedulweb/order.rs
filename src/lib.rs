@@ -36,6 +36,7 @@ pub mod orders;
 pub mod pack;
 pub mod product_names;
 pub mod resi;
+pub mod scheduler;
 pub mod screen_ocr;
 pub mod session;
 pub mod store;

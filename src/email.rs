@@ -25,9 +25,7 @@ impl SmtpConfig {
             .ok()
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "Order.rs <noreply@obayito.com>".into());
-        let to = std::env::var("RESEND_TO")
-            .ok()
-            .filter(|s| !s.is_empty());
+        let to = std::env::var("RESEND_TO").ok().filter(|s| !s.is_empty());
         Some(Self { api_key, from, to })
     }
 }
@@ -46,10 +44,7 @@ pub async fn send_pdf(
     pdf_bytes: &[u8],
     filename: &str,
 ) -> Result<String> {
-    let b64 = base64::Engine::encode(
-        &base64::engine::general_purpose::STANDARD,
-        pdf_bytes,
-    );
+    let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, pdf_bytes);
     let attachment = json!({
         "filename": filename,
         "content": b64,
@@ -68,10 +63,7 @@ pub async fn send_pdf_only(
     pdf_bytes: &[u8],
     filename: &str,
 ) -> Result<String> {
-    let b64 = base64::Engine::encode(
-        &base64::engine::general_purpose::STANDARD,
-        pdf_bytes,
-    );
+    let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, pdf_bytes);
     let attachment = json!({
         "filename": filename,
         "content": b64,
@@ -115,8 +107,8 @@ async fn send(
             text.chars().take(400).collect::<String>()
         )));
     }
-    let v: serde_json::Value = serde_json::from_str(&text)
-        .map_err(|e| Error::Other(format!("resend json: {e}")))?;
+    let v: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| Error::Other(format!("resend json: {e}")))?;
     let id = v
         .get("id")
         .and_then(|i| i.as_str())
@@ -124,4 +116,3 @@ async fn send(
     tracing::info!(to, subject, msg_id = %id, "email sent");
     Ok(id.to_string())
 }
-
