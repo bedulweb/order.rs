@@ -38,6 +38,8 @@ pub struct Config {
     pub auto_relogin: bool,
     /// Directory of built ops SPA (`web/dist`). Empty/`off` disables static serve.
     pub web_dist: Option<PathBuf>,
+    /// SMTP relay for email notifications (e.g. Resend). None if not configured.
+    pub smtp: Option<crate::email::SmtpConfig>,
 }
 
 impl Config {
@@ -124,6 +126,7 @@ impl Config {
                     }
                 }
             },
+            smtp: crate::email::SmtpConfig::from_env(),
         })
     }
 

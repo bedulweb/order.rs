@@ -25,6 +25,7 @@ pub mod crypto;
 pub mod daily_infographic;
 pub mod daily_report;
 pub mod db;
+pub mod email;
 pub mod error;
 pub mod instant_notify;
 pub mod map;

@@ -403,7 +403,7 @@ fn resolve_line_item(
     }
 }
 
-pub(crate) async fn load_items_for_orders(
+pub async fn load_items_for_orders(
     pool: &PgPool,
     order_ids: &[i64],
 ) -> Result<std::collections::HashMap<i64, Vec<BatchLineItem>>> {

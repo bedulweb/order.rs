@@ -279,10 +279,18 @@ async fn fetch_thumbs(urls: &[String]) -> HashMap<String, DynamicImage> {
     map
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TwoUp {
+    No,
+    Yes,
+}
+
 struct PageState {
     page: printpdf::PdfPageIndex,
     layer: printpdf::PdfLayerIndex,
     y: f32,
+    /// 0 = left sub-page, 1 = right sub-page (2-up). Always 0 in single mode.
+    col: usize,
 }
 
 fn layer_of(doc: &PdfDocumentReference, st: &PageState) -> PdfLayerReference {
@@ -393,6 +401,32 @@ pub async fn render_batch_pdf(
     _urgent_count: i32,
     lines: &[PdfOrderLine],
 ) -> Result<Vec<u8>> {
+    render_batch_pdf_two_up(batch_id, session, created_wib, order_count, _urgent_count, lines, TwoUp::No).await
+}
+
+/// Same as [`render_batch_pdf`] but lays the content out in **two columns per
+/// A4 sheet** (2-up / pages-per-sheet = 2) without changing each row's layout.
+/// Rows flow into the left column first, then the right, then a new sheet.
+pub async fn render_batch_pdf_2up(
+    batch_id: Uuid,
+    session: BatchSession,
+    created_wib: &str,
+    order_count: i32,
+    urgent_count: i32,
+    lines: &[PdfOrderLine],
+) -> Result<Vec<u8>> {
+    render_batch_pdf_two_up(batch_id, session, created_wib, order_count, urgent_count, lines, TwoUp::Yes).await
+}
+
+async fn render_batch_pdf_two_up(
+    batch_id: Uuid,
+    session: BatchSession,
+    created_wib: &str,
+    order_count: i32,
+    _urgent_count: i32,
+    lines: &[PdfOrderLine],
+    two_up: TwoUp,
+) -> Result<Vec<u8>> {
     let rows = aggregate_summary_rows(lines);
     let urls: Vec<String> = rows.iter().filter_map(|r| r.image_url.clone()).collect();
     let thumbs = fetch_thumbs(&urls).await;
@@ -404,7 +438,25 @@ pub async fn render_batch_pdf(
     let title = "Summary List";
     let _ = (batch_id, session);
 
-    let (doc, page1, layer1) = PdfDocument::new("Summary List", Mm(PAGE_W), Mm(PAGE_H), "Layer 1");
+    // Physical sheet size. 2-up = A4 landscape holding two A5 sub-pages side by
+    // side; each sub-page is the original A4 content scaled to A5 (×0.7071) so
+    // the layout is unchanged, only smaller.
+    let (sheet_w, sheet_h): (f32, f32) = match two_up {
+        TwoUp::No => (PAGE_W, PAGE_H),
+        TwoUp::Yes => (297.0, 210.0),
+    };
+    // A4 → A5 scale (1/√2); 1.0 in single-page mode.
+    let scale: f32 = match two_up {
+        TwoUp::No => 1.0,
+        TwoUp::Yes => 0.70710678,
+    };
+    // Sub-page width in points (A5 portrait = 148.5 mm), used as CTM translate.
+    let sub_w_pt: f32 = match two_up {
+        TwoUp::No => 0.0,
+        TwoUp::Yes => 148.5 * 72.0 / 25.4,
+    };
+
+    let (doc, page1, layer1) = PdfDocument::new("Summary List", Mm(sheet_w), Mm(sheet_h), "Layer 1");
     let font = doc
         .add_builtin_font(BuiltinFont::Helvetica)
         .map_err(|e| Error::Other(format!("pdf font: {e}")))?;
@@ -416,11 +468,8 @@ pub async fn render_batch_pdf(
         page: page1,
         layer: layer1,
         y: PAGE_H - MARGIN,
+        col: 0,
     }];
-
-    let text_right_x = PAGE_W - MARGIN - QTY_COL_W;
-    let tx = MARGIN + THUMB_MM + THUMB_GAP;
-    let max_name_w = text_right_x - tx - 2.0;
 
     let draw_header = |doc: &PdfDocumentReference,
                        st: &mut PageState,
@@ -462,9 +511,34 @@ pub async fn render_batch_pdf(
         );
     };
 
+    // Enter the current sub-page's coordinate system (identity in single mode;
+    // scale+translate in 2-up) and draw the header.
+    let begin_sub = |doc: &PdfDocumentReference,
+                     st: &mut PageState,
+                     font: &printpdf::IndirectFontRef,
+                     font_bold: &printpdf::IndirectFontRef,
+                     title: &str,
+                     meta: &str| {
+        if two_up == TwoUp::Yes {
+            let layer = layer_of(doc, st);
+            layer.save_graphics_state();
+            let tx = if st.col == 0 { 0.0 } else { sub_w_pt };
+            layer.set_ctm(printpdf::CurTransMat::Raw([scale, 0.0, 0.0, scale, tx, 0.0]));
+        }
+        draw_header(doc, st, font, font_bold, title, meta);
+    };
+
+    // Leave the current sub-page's coordinate system (restore CTM in 2-up).
+    let end_sub = |doc: &PdfDocumentReference, st: &PageState| {
+        if two_up == TwoUp::Yes {
+            let layer = layer_of(doc, st);
+            layer.restore_graphics_state();
+        }
+    };
+
     {
         let st = pages.last_mut().unwrap();
-        draw_header(&doc, st, &font, &font_bold, title, &meta);
+        begin_sub(&doc, st, &font, &font_bold, title, &meta);
     }
 
     for row in &rows {
@@ -475,6 +549,13 @@ pub async fn render_batch_pdf(
                 pkg_parts.push(format!("        instant {instant_qty}"));
             }
         }
+        // Content is always laid out at full A4 width; CTM scaling makes it A5
+        // in 2-up mode, so the row layout itself never changes.
+        let (x0, x1) = (MARGIN, PAGE_W - MARGIN);
+        let text_right_x = x1 - QTY_COL_W;
+        let tx = x0 + THUMB_MM + THUMB_GAP;
+        let max_name_w = text_right_x - tx - 2.0;
+
         let pkg_lines = wrap_parts(&pkg_parts, 7.5, max_name_w);
         let n_pkg = pkg_lines.len();
 
@@ -483,14 +564,27 @@ pub async fn render_batch_pdf(
         let row_h = content_h + GAP_AFTER_DIV;
 
         if pages.last().unwrap().y - row_h < CONTENT_BOTTOM {
-            let (p, l) = doc.add_page(Mm(PAGE_W), Mm(PAGE_H), "Layer 1");
-            pages.push(PageState {
-                page: p,
-                layer: l,
-                y: PAGE_H - MARGIN,
-            });
-            let st = pages.last_mut().unwrap();
-            draw_header(&doc, st, &font, &font_bold, title, &meta);
+            if two_up == TwoUp::Yes && pages.last().unwrap().col == 0 {
+                // Left A5 sub-page full → continue on the right sub-page.
+                let st = pages.last_mut().unwrap();
+                end_sub(&doc, st);
+                st.col = 1;
+                st.y = PAGE_H - MARGIN;
+                let st = pages.last_mut().unwrap();
+                begin_sub(&doc, st, &font, &font_bold, title, &meta);
+            } else {
+                let st = pages.last_mut().unwrap();
+                end_sub(&doc, st);
+                let (p, l) = doc.add_page(Mm(sheet_w), Mm(sheet_h), "Layer 1");
+                pages.push(PageState {
+                    page: p,
+                    layer: l,
+                    y: PAGE_H - MARGIN,
+                    col: 0,
+                });
+                let st = pages.last_mut().unwrap();
+                begin_sub(&doc, st, &font, &font_bold, title, &meta);
+            }
         }
 
         let st = pages.last_mut().unwrap();
@@ -503,12 +597,12 @@ pub async fn render_batch_pdf(
         let mut drew_img = false;
         if let Some(url) = row.image_url.as_ref() {
             if let Some(dyn_img) = thumbs.get(url) {
-                place_thumb(&layer, dyn_img, MARGIN, img_bottom);
+                place_thumb(&layer, dyn_img, x0, img_bottom);
                 drew_img = true;
             }
         }
         if !drew_img {
-            draw_thumb_placeholder(&layer, MARGIN, img_bottom);
+            draw_thumb_placeholder(&layer, x0, img_bottom);
         }
 
         // name + qty (qty 2x besar, baseline diturunkan agar pas di baris)
@@ -519,7 +613,7 @@ pub async fn render_batch_pdf(
             &font_bold,
             &row.qty.to_string(),
             22.0,
-            PAGE_W - MARGIN,
+            x1,
             row_top - 4.5,
             true,
         );
@@ -549,12 +643,21 @@ pub async fn render_batch_pdf(
 
         let content_bottom = y_text.min(img_bottom) - 0.5;
         let div_y = content_bottom - GAP_BEFORE_DIV;
-        hline(&layer, MARGIN, PAGE_W - MARGIN, div_y, 0.88);
+        hline(&layer, x0, x1, div_y, 0.88);
         st.y = div_y - GAP_AFTER_DIV;
     }
 
     for (i, st) in pages.iter().enumerate() {
+        if two_up == TwoUp::Yes {
+            let layer = layer_of(&doc, st);
+            layer.save_graphics_state();
+            let tx = if st.col == 0 { 0.0 } else { sub_w_pt };
+            layer.set_ctm(printpdf::CurTransMat::Raw([scale, 0.0, 0.0, scale, tx, 0.0]));
+        }
         draw_footer(&doc, st, i + 1, &font, &print_stamp);
+        if two_up == TwoUp::Yes {
+            layer_of(&doc, st).restore_graphics_state();
+        }
     }
 
     let mut buf = BufWriter::new(Vec::new());
