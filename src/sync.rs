@@ -922,66 +922,80 @@ pub async fn run_worker(pool: PgPool, cfg: Config, app_cfg: WorkerConfig) -> Res
         tick.tick().await;
         tick_n += 1;
 
-        if let Err(e) = state.ensure_api().await {
-            warn!(error = %e, "ensure session failed — skip tick");
-            continue;
-        }
+        // Sync hanya jalan di jam kerja (default 07:50–17:00 WIB). Di luar itu
+        // worker tidur untuk BigSeller (tidak menarik order/reconcile/bucket),
+        // tapi scheduler harian (batch pagi, rekap sore, cancel printed) dan
+        // cancel-sync malam tetap berjalan sesuai jadwal masing-masing.
+        let in_work_hours = crate::batch::is_within_working_hours(
+            Utc::now(),
+            app_cfg.work_hour_start_min,
+            app_cfg.work_hour_end_min,
+        );
 
-        match state.run_new_sync(&ctx).await {
-            Ok(s) => {
-                if s.created > 0 {
-                    info!(created = s.created, "new orders detected");
-                }
-                // Keep the saved session fresh (cookies rotate per response).
-                state.persist_session().await;
-                // Absence is only meaningful after a successful bucket pass.
-                match state.run_reconcile(&ctx).await {
-                    Ok(r) if r.candidates > 0 => {
-                        info!(
-                            candidates = r.candidates,
-                            refreshed = r.refreshed,
-                            archived = r.archived,
-                            not_found = r.not_found,
-                            "reconciled stale new orders"
-                        );
+        if in_work_hours {
+            if let Err(e) = state.ensure_api().await {
+                warn!(error = %e, "ensure session failed — skip tick");
+                continue;
+            }
+
+            match state.run_new_sync(&ctx).await {
+                Ok(s) => {
+                    if s.created > 0 {
+                        info!(created = s.created, "new orders detected");
                     }
-                    Err(e) => warn!(error = %e, "reconcile failed"),
-                    _ => {}
+                    // Keep the saved session fresh (cookies rotate per response).
+                    state.persist_session().await;
+                    // Absence is only meaningful after a successful bucket pass.
+                    match state.run_reconcile(&ctx).await {
+                        Ok(r) if r.candidates > 0 => {
+                            info!(
+                                candidates = r.candidates,
+                                refreshed = r.refreshed,
+                                archived = r.archived,
+                                not_found = r.not_found,
+                                "reconciled stale new orders"
+                            );
+                        }
+                        Err(e) => warn!(error = %e, "reconcile failed"),
+                        _ => {}
+                    }
                 }
+                Err(e) => warn!(error = %e, "sync new failed"),
             }
-            Err(e) => warn!(error = %e, "sync new failed"),
-        }
 
-        // Packed buckets: processing is tiny (1–2 pages) every tick; shipped
-        // is heavier (~9 pages at 50/page), so every 6th tick (~30 min).
-        // Without these, orders packed outside our UI or handed to the
-        // carrier keep their stale state forever (reconcile only heals
-        // rows still state='new').
-        match state.run_bucket_sync(&ctx, "processing", 2).await {
-            Ok(s) if s.state_changed > 0 => {
-                info!(
-                    upserted = s.upserted,
-                    state_changed = s.state_changed, "processing bucket: states caught up"
-                );
-            }
-            Ok(_) => {}
-            Err(e) => warn!(error = %e, "sync processing failed"),
-        }
-        if tick_n.is_multiple_of(6) {
-            match state.run_bucket_sync(&ctx, "shipped", 12).await {
+            // Packed buckets: processing is tiny (1–2 pages) every tick; shipped
+            // is heavier (~9 pages at 50/page), so every 6th tick (~30 min).
+            // Without these, orders packed outside our UI or handed to the
+            // carrier keep their stale state forever (reconcile only heals
+            // rows still state='new').
+            match state.run_bucket_sync(&ctx, "processing", 2).await {
                 Ok(s) if s.state_changed > 0 => {
                     info!(
                         upserted = s.upserted,
-                        state_changed = s.state_changed, "shipped bucket: states caught up"
+                        state_changed = s.state_changed,
+                        "processing bucket: states caught up"
                     );
                 }
                 Ok(_) => {}
-                Err(e) => warn!(error = %e, "sync shipped failed"),
+                Err(e) => warn!(error = %e, "sync processing failed"),
             }
-        }
+            if tick_n.is_multiple_of(6) {
+                match state.run_bucket_sync(&ctx, "shipped", 12).await {
+                    Ok(s) if s.state_changed > 0 => {
+                        info!(
+                            upserted = s.upserted,
+                            state_changed = s.state_changed,
+                            "shipped bucket: states caught up"
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(e) => warn!(error = %e, "sync shipped failed"),
+                }
+            }
 
-        if let Err(e) = drain_outbox(&state.pool, &state.app_cfg).await {
-            warn!(error = %e, "outbox drain failed");
+            if let Err(e) = drain_outbox(&state.pool, &state.app_cfg).await {
+                warn!(error = %e, "outbox drain failed");
+            }
         }
 
         // Scheduled ops jobs (batch pagi, rekap sore, cancel printed) — WIB clock.
@@ -997,20 +1011,26 @@ pub async fn run_worker(pool: PgPool, cfg: Config, app_cfg: WorkerConfig) -> Res
                 .unwrap_or(NaiveTime::MIN);
         if due && last_cancel_day != Some(yday) {
             info!("running evening cancel-related sync");
-            match state.run_cancel_sync(&ctx).await {
-                Ok(stats) => {
-                    for s in stats {
-                        info!(kind = %s.kind, upserted = s.upserted, "cancel sync ok");
+            // Outside work hours ensure_api isn't called every tick — make sure
+            // the session is fresh before the evening cancel pull.
+            if let Err(e) = state.ensure_api().await {
+                warn!(error = %e, "cancel sync: session not ready, skip");
+            } else {
+                match state.run_cancel_sync(&ctx).await {
+                    Ok(stats) => {
+                        for s in stats {
+                            info!(kind = %s.kind, upserted = s.upserted, "cancel sync ok");
+                        }
+                        last_cancel_day = Some(yday);
+                        let _ = set_cursor(
+                            &state.pool,
+                            &format!("last_cancel_evening:{}", account.code),
+                            json!({ "at": Utc::now().to_rfc3339(), "localHour": now.hour() }),
+                        )
+                        .await;
                     }
-                    last_cancel_day = Some(yday);
-                    let _ = set_cursor(
-                        &state.pool,
-                        &format!("last_cancel_evening:{}", account.code),
-                        json!({ "at": Utc::now().to_rfc3339(), "localHour": now.hour() }),
-                    )
-                    .await;
+                    Err(e) => warn!(error = %e, "evening cancel sync failed"),
                 }
-                Err(e) => warn!(error = %e, "evening cancel sync failed"),
             }
         }
     }

@@ -166,6 +166,7 @@ Show `message` as-is in the app UI.
 
 - Every `SYNC_NEW_INTERVAL_SECS` (default 60): pull `status=new`, upsert, enqueue `order.created` on first see.
 - **Working hours** (`WORK_HOUR_START`/`WORK_HOUR_END`, default `07:50`/`17:00` WIB): urgent/instant `order.created` notifications are only delivered inside the window. Events arriving outside it are deferred in the outbox (`available_at` pushed to the next work start) and sent automatically when the window opens — so the ops group isn't pinged overnight.
+- **Sync only during work hours**: the worker's BigSeller polling (new orders, reconcile, packed buckets, outbox drain) only runs inside `WORK_HOUR_START`–`WORK_HOUR_END`; overnight the worker sleeps for BigSeller. Daily scheduled jobs (batch pagi, rekap sore, cancel printed) and the evening cancel sync still run on their own WIB schedule.
 - **Scheduled jobs** (once per WIB day, on the worker tick):
   - `BATCH_PAGI_HOUR` (default `07:50`): claim the backlog into a morning batch, render the **2-up Summary List PDF** (two A4 pages per sheet), auto-mark it printed in BigSeller, and email it to `RESEND_TO` (e.g. `printer@print.epsonconnect.com`).
   - `REKAP_HOUR` (default `17:00`): send the daily infographic PNG to the WhatsApp group.
