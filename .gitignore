@@ -49,3 +49,6 @@ models/*.onnx
 # Agent skill copies (optional local)
 .agents/
 skills-lock.json
+
+# Python virtualenv (mitmproxy captures)
+.venv-mitm/

@@ -356,16 +356,22 @@ async fn main() -> anyhow::Result<()> {
                 reconcile_cap: cfg.reconcile_cap,
                 cancel_hour_local: cfg.cancel_hour_local,
                 cancel_minute_local: cfg.cancel_minute_local,
+                work_hour_start_min: cfg.work_hour_start_min,
+                work_hour_end_min: cfg.work_hour_end_min,
                 wa_webhook_url: cfg.wa_webhook_url.clone(),
                 wa_webhook_token: cfg.wa_webhook_token.clone(),
                 wazapin: cfg.wazapin.clone(),
                 auto_relogin: cfg.auto_relogin,
             };
             println!(
-                "worker: new every {}s, cancel {:02}:{:02} local, auto_relogin={}, webhook={}, wazapin_instant={}, wazapin_cancel={}",
+                "worker: new every {}s, cancel {:02}:{:02} local, work {:02}:{:02}–{:02}:{:02} WIB, auto_relogin={}, webhook={}, wazapin_instant={}, wazapin_cancel={}",
                 wcfg.new_interval_secs,
                 wcfg.cancel_hour_local,
                 wcfg.cancel_minute_local,
+                wcfg.work_hour_start_min / 60,
+                wcfg.work_hour_start_min % 60,
+                wcfg.work_hour_end_min / 60,
+                wcfg.work_hour_end_min % 60,
                 wcfg.auto_relogin,
                 wcfg.wa_webhook_url.is_some(),
                 wcfg.wazapin

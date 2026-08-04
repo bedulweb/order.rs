@@ -2017,6 +2017,23 @@ pub async fn mark_outbox_failed(pool: &PgPool, id: i64, err: &str) -> Result<()>
     Ok(())
 }
 
+/// Push a pending outbox event's `available_at` into the future (e.g. to defer
+/// delivery until working hours resume). Only touches still-pending events.
+pub async fn defer_outbox_until(pool: &PgPool, id: i64, until: DateTime<Utc>) -> Result<()> {
+    sqlx::query(
+        r#"
+        UPDATE notification_outbox
+        SET available_at = $2
+        WHERE id = $1 AND status = 'pending'
+        "#,
+    )
+    .bind(id)
+    .bind(until)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 pub async fn get_cursor(pool: &PgPool, key: &str) -> Result<Option<Value>> {
     let row = sqlx::query(r#"SELECT value FROM sync_cursors WHERE key = $1"#)
         .bind(key)

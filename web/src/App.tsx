@@ -17,6 +17,7 @@ import {
   type ColumnDef,
 } from "@tanstack/react-table";
 import {
+  ArrowUpDown,
   BadgeCheck,
   ChevronLeft,
   ChevronRight,
@@ -798,6 +799,8 @@ const SESSION_LABEL: Record<BatchSession, string> = {
 const PAGE_SIZE = 50;
 const URGENT_FILTER_STORAGE_KEY = "orders_feed_urgent_only";
 const UNPRINTED_SUMMARY_FILTER_STORAGE_KEY = "orders_feed_unprinted_summary_only";
+const FEED_SORT_STORAGE_KEY = "orders_feed_sort_sku";
+type FeedSort = "newest" | "sku";
 
 const FEED_TABS: { id: FeedStatus; label: string }[] = [
   { id: "new", label: "Baru" },
@@ -1001,6 +1004,13 @@ function NewOrdersPage() {
       return false;
     }
   });
+  const [feedSort, setFeedSort] = useState<FeedSort>(() => {
+    try {
+      return localStorage.getItem(FEED_SORT_STORAGE_KEY) === "true" ? "sku" : "newest";
+    } catch {
+      return "newest";
+    }
+  });
   const [page, setPage] = useState(0);
   const [searchInput, setSearchInput] = useState("");
   const [appliedQ, setAppliedQ] = useState("");
@@ -1118,8 +1128,19 @@ function NewOrdersPage() {
         rows.push({ orderId: o.orderId, order: o, item: it });
       }
     }
+    if (feedSort === "sku") {
+      rows.sort((a, b) => {
+        const skuA = a.item?.sku?.toUpperCase() ?? "";
+        const skuB = b.item?.sku?.toUpperCase() ?? "";
+        return (
+          skuA.localeCompare(skuB) ||
+          (a.item?.variantAttr ?? "").localeCompare(b.item?.variantAttr ?? "") ||
+          a.orderId - b.orderId
+        );
+      });
+    }
     return rows;
-  }, [orders]);
+  }, [orders, feedSort]);
 
   /** Unprinted orders on the current page (for the select-shortcut hint). */
   const pageUnprintedCount = useMemo(
@@ -1146,6 +1167,20 @@ function NewOrdersPage() {
       const next = !current;
       try {
         localStorage.setItem(UNPRINTED_SUMMARY_FILTER_STORAGE_KEY, String(next));
+      } catch {
+        // The preference still works for this session when storage is unavailable.
+      }
+      setPage(0);
+      setSelectedOrders(new Map());
+      return next;
+    });
+  }
+
+  function toggleFeedSort() {
+    setFeedSort((current) => {
+      const next: FeedSort = current === "sku" ? "newest" : "sku";
+      try {
+        localStorage.setItem(FEED_SORT_STORAGE_KEY, String(next === "sku"));
       } catch {
         // The preference still works for this session when storage is unavailable.
       }
@@ -1668,9 +1703,25 @@ function NewOrdersPage() {
           Belum print summary
         </button>
 
-          <button
-            type="button"
-            onClick={() => setAutoRefresh((v) => !v)}
+        <button
+          type="button"
+          onClick={toggleFeedSort}
+          aria-pressed={feedSort === "sku"}
+          className={cn(
+            "inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium transition-colors",
+            feedSort === "sku"
+              ? "border-primary/50 bg-primary/10 text-primary"
+              : "border-input bg-popover text-muted-foreground hover:bg-accent/50",
+          )}
+          title="Urutkan item per SKU (seperti PDF) atau per order terbaru"
+        >
+          <ArrowUpDown className="size-3.5" />
+          {feedSort === "sku" ? "Per SKU" : "Terbaru"}
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setAutoRefresh((v) => !v)}
             className={cn(
               "inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium transition-colors",
               autoRefresh

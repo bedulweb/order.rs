@@ -4,10 +4,11 @@
 //! (`voided_at IS NULL`), not wall-clock cutoffs or BigSeller print marks.
 
 use crate::error::{Error, Result};
-use chrono::{DateTime, FixedOffset, NaiveDate, Utc};
+use chrono::{DateTime, FixedOffset, NaiveDate, Timelike, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Row};
 use std::fmt;
+use std::path::Path;
 use uuid::Uuid;
 
 /// Asia/Jakarta fixed offset (WIB, no DST).
@@ -208,6 +209,42 @@ pub fn wib_day_bounds_utc(date: NaiveDate) -> Result<(DateTime<Utc>, DateTime<Ut
     let start_utc = start_local.with_timezone(&Utc);
     let end_utc = start_utc + chrono::Duration::days(1);
     Ok((start_utc, end_utc))
+}
+
+/// Default ops working window (WIB): 07:50 – 17:00.
+pub const WORK_HOUR_START_MIN: u32 = 7 * 60 + 50;
+pub const WORK_HOUR_END_MIN: u32 = 17 * 60;
+
+/// True when `now` (in WIB wall time) falls inside [start_min, end_min)
+/// minutes since midnight. A zero-length window is always "open" (gating off).
+pub fn is_within_working_hours(now: DateTime<Utc>, start_min: u32, end_min: u32) -> bool {
+    if start_min >= end_min {
+        return true;
+    }
+    let wib = now.with_timezone(&wib_offset());
+    let mins = wib.hour() * 60 + wib.minute();
+    mins >= start_min && mins < end_min
+}
+
+/// Next WIB instant whose wall-clock minute-of-day equals `start_min`; used to
+/// defer outbox delivery until working hours resume (same day when still ahead,
+/// otherwise tomorrow).
+pub fn next_work_start_utc(now: DateTime<Utc>, start_min: u32) -> DateTime<Utc> {
+    let wib = now.with_timezone(&wib_offset());
+    let h = start_min / 60;
+    let m = start_min % 60;
+    let today = wib
+        .date_naive()
+        .and_hms_opt(h, m, 0)
+        .expect("valid work-hour clock")
+        .and_local_timezone(wib_offset())
+        .single()
+        .expect("WIB has no DST");
+    if wib < today {
+        today.with_timezone(&Utc)
+    } else {
+        (today + chrono::Duration::days(1)).with_timezone(&Utc)
+    }
 }
 
 pub fn carrier_display(
@@ -656,6 +693,48 @@ pub struct SkippedOrder {
     pub order_id: i64,
     pub platform_order_id: Option<String>,
     pub reason: String,
+}
+
+/// Mark BigSeller orders as Summary List printed (`updateOrderPrintState`,
+/// `autoType=collect&mark=1`) so the same rows don't keep showing as unprinted
+/// in BigSeller's own filter and sync back to us as `print_collect_mark`.
+///
+/// Mirrors the ops "Mark Summary List → Printed" action. Called after a batch
+/// is generated; failures are surfaced to the caller (which may choose to log).
+pub async fn mark_summary_printed(
+    base_url: &str,
+    session_path: &Path,
+    order_ids: &[i64],
+) -> Result<()> {
+    if order_ids.is_empty() {
+        return Ok(());
+    }
+    let session = crate::session::SessionData::load(session_path)?;
+    let api = crate::orders::OrdersApi::new(base_url, &session)?;
+    let ids_csv = order_ids
+        .iter()
+        .map(|i| i.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let v = api
+        .post_form(
+            "/api/v1/printAuto/updateOrderPrintState.json",
+            &[
+                ("orderIds", ids_csv),
+                ("autoType", "collect".into()),
+                ("mark", "1".into()),
+            ],
+        )
+        .await?;
+    let code = crate::client::api_code(&v).unwrap_or(-1);
+    if code != 0 {
+        return Err(Error::Other(crate::client::api_msg(&v)));
+    }
+    tracing::info!(
+        count = order_ids.len(),
+        "marked orders as Summary List printed"
+    );
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1127,5 +1206,64 @@ mod tests {
         // 2026-07-22 00:00 WIB = 2026-07-21 17:00 UTC
         assert_eq!(start.to_rfc3339(), "2026-07-21T17:00:00+00:00");
         assert_eq!((end - start).num_hours(), 24);
+    }
+
+    fn wib_dt(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> DateTime<Utc> {
+        let wib = wib_offset();
+        NaiveDate::from_ymd_opt(y, mo, d)
+            .unwrap()
+            .and_hms_opt(h, mi, 0)
+            .unwrap()
+            .and_local_timezone(wib)
+            .unwrap()
+            .with_timezone(&Utc)
+    }
+
+    #[test]
+    fn working_hours_opens_0750_closes_1700() {
+        // 07:49 → outside, 07:50 → inside
+        assert!(!is_within_working_hours(
+            wib_dt(2026, 7, 22, 7, 49),
+            470,
+            1020
+        ));
+        assert!(is_within_working_hours(
+            wib_dt(2026, 7, 22, 7, 50),
+            470,
+            1020
+        ));
+        // 16:59 → inside, 17:00 → outside
+        assert!(is_within_working_hours(
+            wib_dt(2026, 7, 22, 16, 59),
+            470,
+            1020
+        ));
+        assert!(!is_within_working_hours(
+            wib_dt(2026, 7, 22, 17, 0),
+            470,
+            1020
+        ));
+    }
+
+    #[test]
+    fn zero_length_work_window_is_always_open() {
+        assert!(is_within_working_hours(wib_dt(2026, 7, 22, 3, 0), 600, 600));
+        assert!(is_within_working_hours(
+            wib_dt(2026, 7, 22, 23, 0),
+            600,
+            600
+        ));
+    }
+
+    #[test]
+    fn next_work_start_same_day_or_tomorrow() {
+        // 06:00 → 07:50 same day (WIB)
+        let t = wib_dt(2026, 7, 22, 6, 0);
+        let next = next_work_start_utc(t, 470);
+        assert_eq!(next, wib_dt(2026, 7, 22, 7, 50));
+        // 18:00 → 07:50 next day (WIB)
+        let t = wib_dt(2026, 7, 22, 18, 0);
+        let next = next_work_start_utc(t, 470);
+        assert_eq!(next, wib_dt(2026, 7, 23, 7, 50));
     }
 }

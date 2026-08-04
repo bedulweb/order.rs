@@ -712,13 +712,19 @@ pub fn to_svg(report: &DailyInfographic) -> Result<String> {
         format!(" · Fee plat. ~{}", fmt_rp(c.fee_est))
     };
     let est_line = format!(
-        "HPP ~{} · Gross ~{} · match {:.0}%{} · Ongkir ~{}",
+        "HPP ~{} · Gross ~{} · match {:.0}%",
         fmt_rp(report.hpp),
         fmt_rp(report.gross),
         report.hpp_match_pct,
-        fee_line,
-        fmt_rp(c.ship_est)
     );
+    // Second row carries the overflow (fee + ongkir) instead of squeezing the
+    // first row past the card edge.
+    let fee_compact = if fee_line.is_empty() {
+        "Fee plat. ~0".to_string()
+    } else {
+        fee_line.trim_start_matches(" · ").to_string()
+    };
+    let est_line2 = format!("{fee_compact} · Ongkir ~{}", fmt_rp(c.ship_est));
 
     Ok(format!(
         r##"<?xml version="1.0" encoding="UTF-8"?>
@@ -751,10 +757,11 @@ pub fn to_svg(report: &DailyInfographic) -> Result<String> {
 {courier_rows}
 {top_rows}
 
-  <rect x="56" y="1036" width="968" height="116" rx="24" fill="#F0FDFA" stroke="#99F6E4"/>
+  <rect x="56" y="1036" width="968" height="140" rx="24" fill="#F0FDFA" stroke="#99F6E4"/>
   <text x="82" y="1074" font-family="DejaVu Sans, Liberation Sans, sans-serif" font-size="16" font-weight="800" fill="#0F766E">EST INTERNAL</text>
-  <text x="82" y="1118" font-family="DejaVu Sans, Liberation Sans, sans-serif" font-size="24" font-weight="800" fill="#134E4A">{est_line}</text>
-  <text x="82" y="1144" font-family="DejaVu Sans, Liberation Sans, sans-serif" font-size="14" fill="#0F766E">HPP, gross, fee, dan ongkir adalah estimasi operasional; bukan accounting final.</text>
+  <text x="82" y="1116" font-family="DejaVu Sans, Liberation Sans, sans-serif" font-size="24" font-weight="800" fill="#134E4A">{est_line}</text>
+  <text x="82" y="1148" font-family="DejaVu Sans, Liberation Sans, sans-serif" font-size="20" font-weight="700" fill="#134E4A">{est_line2}</text>
+  <text x="82" y="1172" font-family="DejaVu Sans, Liberation Sans, sans-serif" font-size="13" fill="#0F766E">HPP, gross, fee, dan ongkir adalah estimasi operasional; bukan accounting final.</text>
 
   <rect x="56" y="1184" width="968" height="112" rx="24" fill="#FEF2F2" stroke="#FCA5A5"/>
   <text x="82" y="1226" font-family="DejaVu Sans, Liberation Sans, sans-serif" font-size="16" font-weight="800" fill="#B91C1C">CANCEL</text>
@@ -776,6 +783,7 @@ pub fn to_svg(report: &DailyInfographic) -> Result<String> {
         courier_rows = courier_rows,
         top_rows = top_rows,
         est_line = esc(&est_line),
+        est_line2 = esc(&est_line2),
         cancel_n = c.cancel_n,
         cancel_gmv = esc(&fmt_rp(c.cancel_gmv)),
         cancel_pct = esc(&fmt_pct(pct_i64(c.cancel_n, p.cancel_n))),

@@ -23,6 +23,11 @@ pub struct Config {
     pub reconcile_cap: i64,
     pub cancel_hour_local: u32,
     pub cancel_minute_local: u32,
+    /// Working-hours window (WIB minutes since midnight) for outbox delivery.
+    /// Default 07:50–17:00 (470–1020). Outside the window, urgent/instant
+    /// order notifications are deferred to the next work start.
+    pub work_hour_start_min: u32,
+    pub work_hour_end_min: u32,
     pub wa_webhook_url: Option<String>,
     pub wa_webhook_token: Option<String>,
     /// Wazapin group notify (instant orders). None if env incomplete.
@@ -95,6 +100,8 @@ impl Config {
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(0)
                 .min(59),
+            work_hour_start_min: env_hhmm("WORK_HOUR_START", crate::batch::WORK_HOUR_START_MIN),
+            work_hour_end_min: env_hhmm("WORK_HOUR_END", crate::batch::WORK_HOUR_END_MIN),
             wa_webhook_url: env::var("WA_WEBHOOK_URL").ok().filter(|s| !s.is_empty()),
             wa_webhook_token: env::var("WA_WEBHOOK_TOKEN").ok().filter(|s| !s.is_empty()),
             wazapin: crate::wazapin::WazapinConfig::from_env(),
@@ -168,4 +175,23 @@ pub fn resolve_under_root(path: &Path) -> PathBuf {
     } else {
         project_root().join(path)
     }
+}
+
+/// Parse an env var as `HH:MM` (24h) into minutes since midnight, falling back
+/// to `default_min` when unset/invalid.
+fn env_hhmm(key: &str, default_min: u32) -> u32 {
+    let raw = match env::var(key) {
+        Ok(s) if !s.trim().is_empty() => s,
+        _ => return default_min,
+    };
+    let mut parts = raw.split(':');
+    let h: u32 = parts
+        .next()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(default_min / 60);
+    let m: u32 = parts
+        .next()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(default_min % 60);
+    (h.min(23) * 60 + m.min(59)).min(24 * 60 - 1)
 }

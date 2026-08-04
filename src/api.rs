@@ -769,9 +769,10 @@ async fn orders_resi_confirm(
     if body.order_ids.len() > 300 {
         return Err(ApiError::BadRequest("max 300 orders per resi print".into()));
     }
-    let v = crate::resi::confirm_resi_print(&st.pool, &st.base_url, &st.session_path, &body.order_ids)
-        .await
-        .map_err(ApiError::from)?;
+    let v =
+        crate::resi::confirm_resi_print(&st.pool, &st.base_url, &st.session_path, &body.order_ids)
+            .await
+            .map_err(ApiError::from)?;
     Ok(Json(v))
 }
 
@@ -812,6 +813,12 @@ async fn orders_picklist_pdf(
     let (filename, bytes) = batch::render_picklist_pdf(&st.pool, &body.order_ids)
         .await
         .map_err(ApiError::from)?;
+    // Pick-list print is a print action too — mark as Summary List printed.
+    if let Err(e) =
+        batch::mark_summary_printed(&st.base_url, &st.session_path, &body.order_ids).await
+    {
+        tracing::warn!(error = %e, count = body.order_ids.len(), "auto mark summary printed failed (pdf sent anyway)");
+    }
     let mut res = Response::new(bytes.into());
     res.headers_mut().insert(
         header::CONTENT_TYPE,
@@ -866,6 +873,10 @@ async fn batches_create(
     let detail = batch::create_batch(&st.pool, session, account_id)
         .await
         .map_err(ApiError::from)?;
+    let marked_ids: Vec<i64> = detail.members.iter().map(|m| m.order_id).collect();
+    if let Err(e) = batch::mark_summary_printed(&st.base_url, &st.session_path, &marked_ids).await {
+        tracing::warn!(error = %e, count = marked_ids.len(), "auto mark summary printed failed (batch created anyway)");
+    }
     Ok(Json(detail))
 }
 
@@ -897,6 +908,10 @@ async fn batches_create_from_selection(
     let result = batch::create_batch_from_selection(&st.pool, session, account_id, &body.order_ids)
         .await
         .map_err(ApiError::from)?;
+    let marked_ids: Vec<i64> = result.detail.members.iter().map(|m| m.order_id).collect();
+    if let Err(e) = batch::mark_summary_printed(&st.base_url, &st.session_path, &marked_ids).await {
+        tracing::warn!(error = %e, count = marked_ids.len(), "auto mark summary printed failed (batch created anyway)");
+    }
     Ok(Json(result))
 }
 

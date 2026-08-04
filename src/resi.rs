@@ -168,6 +168,59 @@ pub async fn prepare_resi_print(
     })
 }
 
+/// Probe the server-side print preparation response without confirming print.
+///
+/// This is intentionally read-only with respect to the local order database and
+/// does not call `confirmLabelPrint`; BigSeller may still buffer labels as part
+/// of `checkPrintInfo`, but no order is marked as printed by this function.
+pub async fn probe_resi_print(
+    base_url: &str,
+    session_path: &Path,
+    order_ids: &[i64],
+) -> Result<serde_json::Value> {
+    if order_ids.is_empty() {
+        return Err(Error::Other("no orders selected".into()));
+    }
+    let session = SessionData::load(session_path)?;
+    let client = web_client(base_url, &session)?;
+    let csv = order_ids
+        .iter()
+        .map(i64::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+
+    let check: serde_json::Value = client
+        .post(format!("{base_url}/api/v1/print/print/checkPrintInfo.json"))
+        .form(&[
+            ("orderIds", csv.as_str()),
+            ("printType", "0"),
+            ("isInventory", "0"),
+            ("isCross", "1"),
+        ])
+        .send()
+        .await
+        .map_err(|e| Error::Other(e.to_string()))?
+        .json()
+        .await
+        .map_err(|e| Error::Other(e.to_string()))?;
+
+    let puid: serde_json::Value = client
+        .post(format!("{base_url}/api/v1/print/getPuidNew.json"))
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .map_err(|e| Error::Other(e.to_string()))?
+        .json()
+        .await
+        .map_err(|e| Error::Other(e.to_string()))?;
+
+    Ok(serde_json::json!({
+        "requestedOrderIds": order_ids,
+        "checkPrintInfo": check,
+        "getPuidNew": puid,
+    }))
+}
+
 /// Register the print job so the connected plugin picks it up. This is the
 /// step the live web app performs on its print page (`confirmLabelPrint`)
 /// after the plugin handshake — without it the buffered labels are never

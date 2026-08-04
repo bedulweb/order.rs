@@ -660,6 +660,9 @@ pub struct WorkerConfig {
     pub reconcile_cap: i64,
     pub cancel_hour_local: u32,
     pub cancel_minute_local: u32,
+    /// Working-hours window (WIB minutes since midnight) for outbox delivery.
+    pub work_hour_start_min: u32,
+    pub work_hour_end_min: u32,
     pub wa_webhook_url: Option<String>,
     pub wa_webhook_token: Option<String>,
     pub wazapin: Option<crate::wazapin::WazapinConfig>,
@@ -674,6 +677,8 @@ impl Default for WorkerConfig {
             reconcile_cap: 15,
             cancel_hour_local: 17,
             cancel_minute_local: 0,
+            work_hour_start_min: crate::batch::WORK_HOUR_START_MIN,
+            work_hour_end_min: crate::batch::WORK_HOUR_END_MIN,
             wa_webhook_url: None,
             wa_webhook_token: None,
             wazapin: None,
@@ -1022,6 +1027,28 @@ async fn drain_outbox(pool: &PgPool, cfg: &WorkerConfig) -> Result<()> {
 
     let http = reqwest::Client::new();
     for ev in events {
+        // Working-hours gate: urgent/instant "order.created" notifications are
+        // only delivered inside the work window (default 07:50–17:00 WIB).
+        // Outside it, defer the event to the next work start so the group is
+        // not pinged overnight — it is then sent automatically at open.
+        if ev.event_type == "order.created"
+            && crate::notify::payload_is_urgent(&ev.payload)
+            && !crate::batch::is_within_working_hours(
+                Utc::now(),
+                cfg.work_hour_start_min,
+                cfg.work_hour_end_min,
+            )
+        {
+            let until = crate::batch::next_work_start_utc(Utc::now(), cfg.work_hour_start_min);
+            crate::store::defer_outbox_until(pool, ev.id, until).await?;
+            info!(
+                outbox_id = ev.id,
+                deferred_until = %until.to_rfc3339(),
+                "instant notify deferred to working hours"
+            );
+            continue;
+        }
+
         // 1) Instant → Wazapin group (image card)
         if let Some(ref wz) = wazapin {
             match crate::notify::try_handle_outbox_wazapin(pool, wz, &ev).await {
