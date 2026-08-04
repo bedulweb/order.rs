@@ -31,8 +31,8 @@ const QTY_COL_W: f32 = 16.0;
 const THUMB_MM: f32 = 18.0;
 const THUMB_GAP: f32 = 3.5;
 const THUMB_PAD_MM: f32 = 0.6;
-const GAP_AFTER_DIV: f32 = 1.2;
-const GAP_BEFORE_DIV: f32 = 1.0;
+const GAP_AFTER_DIV: f32 = 2.6;
+const GAP_BEFORE_DIV: f32 = 1.6;
 const THUMB_FETCH_CONCURRENCY: usize = 12;
 const THUMB_TIMEOUT: Duration = Duration::from_secs(8);
 const THUMB_PX: u32 = 144;
@@ -297,11 +297,13 @@ fn layer_of(doc: &PdfDocumentReference, st: &PageState) -> PdfLayerReference {
     doc.get_page(st.page).get_layer(st.layer)
 }
 
-fn hline(layer: &PdfLayerReference, x0: f32, x1: f32, y: f32, gray: f32) {
+fn hline(layer: &PdfLayerReference, x0: f32, x1: f32, y: f32, gray: f32, thickness_mm: f32) {
     layer.set_outline_color(printpdf::Color::Rgb(printpdf::Rgb::new(
         gray, gray, gray, None,
     )));
-    layer.set_outline_thickness(0.5);
+    // printpdf takes thickness in points (1pt = 1/72"), so convert mm → pt
+    // or the line silently stays ~hairline no matter the value.
+    layer.set_outline_thickness(thickness_mm * 72.0 / 25.4);
     let line = Line {
         points: vec![
             (Point::new(Mm(x0), Mm(y)), false),
@@ -481,7 +483,7 @@ async fn render_batch_pdf_two_up(
         text_at(&layer, font_bold, title, 14.0, MARGIN, st.y);
         text_right(&layer, font, meta, 9.0, PAGE_W - MARGIN, st.y, false);
         st.y -= 5.5;
-        hline(&layer, MARGIN, PAGE_W - MARGIN, st.y, 0.45);
+        hline(&layer, MARGIN, PAGE_W - MARGIN, st.y, 0.45, 0.4);
         st.y -= GAP_AFTER_DIV + 1.0;
     };
 
@@ -491,7 +493,7 @@ async fn render_batch_pdf_two_up(
                        font: &printpdf::IndirectFontRef,
                        stamp: &str| {
         let layer = layer_of(doc, st);
-        hline(&layer, MARGIN, PAGE_W - MARGIN, FOOTER_Y + 5.0, 0.75);
+        hline(&layer, MARGIN, PAGE_W - MARGIN, FOOTER_Y + 5.0, 0.75, 0.4);
         text_at(
             &layer,
             font,
@@ -643,7 +645,9 @@ async fn render_batch_pdf_two_up(
 
         let content_bottom = y_text.min(img_bottom) - 0.5;
         let div_y = content_bottom - GAP_BEFORE_DIV;
-        hline(&layer, x0, x1, div_y, 0.88);
+        // Divider antar pesanan disamakan dengan garis header-content
+        // (0.4mm, gray 0.45) supaya konsisten dan tidak mencolok.
+        hline(&layer, x0, x1, div_y, 0.45, 0.4);
         st.y = div_y - GAP_AFTER_DIV;
     }
 
