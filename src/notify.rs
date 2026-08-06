@@ -156,6 +156,11 @@ pub async fn send_instant_notify(
     Ok(r.id)
 }
 
+/// Caption for a combined instant list card (one card per batch window).
+pub fn instant_list_caption(order_count: usize) -> String {
+    format!("Instant Gaiss..\n{order_count} pesanan, deadline cek kartu\nThank youuu")
+}
+
 /// Caption for cancel card / daily cancel list (no @mention).
 pub fn cancel_caption(_order: &CancelOrder) -> String {
     cancel_list_caption(1)
@@ -310,6 +315,33 @@ pub async fn send_cancel_orders(
     Ok(r.id)
 }
 
+/// Render + send a multi-order instant list card (one card per batch window).
+/// Used by the scheduled instant-batch job so a morning rush produces a single
+/// combined card instead of one WA message per order.
+pub async fn send_instant_orders(
+    wazapin: &WazapinClient,
+    orders: Vec<NotifyOrder>,
+) -> Result<String> {
+    if orders.is_empty() {
+        return Err(Error::Other("instant notify: no orders".into()));
+    }
+    for o in &orders {
+        if o.items.is_empty() {
+            warn!(
+                platform_order_id = %o.platform_order_id,
+                "instant notify: no line items"
+            );
+        }
+    }
+    let caption = instant_list_caption(orders.len());
+    let n = orders.len();
+    let png = instant_notify::render_notify_png(orders).await?;
+    let fname = format!("instant-list-{n}.png");
+    let r = wazapin.send_png_bytes(&png, &fname, &caption).await?;
+    info!(order_count = n, msg_id = %r.id, "instant list notify sent");
+    Ok(r.id)
+}
+
 /// Handle one outbox row for Wazapin (instant created or printed cancel).
 /// Returns true if this event was fully handled here (caller should mark sent/failed).
 pub async fn try_handle_outbox_wazapin(
@@ -424,5 +456,35 @@ mod tests {
         let c = cancel_caption(&o);
         assert_eq!(c, "list cancel hari ini gais");
         assert_eq!(cancel_list_caption(7), "list cancel hari ini gais");
+    }
+
+    #[test]
+    fn instant_list_caption_counts_orders() {
+        assert!(instant_list_caption(1).contains("1 pesanan"));
+        assert!(instant_list_caption(9).contains("9 pesanan"));
+        assert!(instant_list_caption(3).contains("Instant Gaiss"));
+        assert!(instant_list_caption(3).contains("Thank youuu"));
+    }
+
+    #[test]
+    fn send_instant_orders_rejects_empty() {
+        let cfg = crate::wazapin::WazapinConfig {
+            base_url: "https://api.wazapin.com".into(),
+            api_key: "test".into(),
+            channel_id: "ch".into(),
+            group_jid: "g".into(),
+            org_slug: None,
+            notify_instant: true,
+            notify_cancel: true,
+        };
+        let client = crate::wazapin::WazapinClient::new(cfg).expect("client");
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("rt");
+        let err = rt
+            .block_on(send_instant_orders(&client, vec![]))
+            .expect_err("empty orders must fail");
+        assert!(err.to_string().contains("no orders"));
     }
 }

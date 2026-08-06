@@ -452,6 +452,29 @@ pub async fn load_items_for_orders(
     Ok(map)
 }
 
+/// True when there is at least one eligible backlog order (state='new', not yet
+/// in a non-voided batch). Used by scheduled jobs to skip a session with an
+/// empty backlog instead of erroring/retrying on `create_batch`.
+pub async fn has_backlog(pool: &PgPool, account_id: Option<i64>) -> Result<bool> {
+    let row = sqlx::query(
+        r#"
+        SELECT EXISTS (
+            SELECT 1 FROM orders o
+            WHERE o.state = 'new'
+              AND ($1::bigint IS NULL OR o.account_id = $1)
+              AND NOT EXISTS (
+                  SELECT 1 FROM batch_orders bo
+                  WHERE bo.order_id = o.id AND bo.voided_at IS NULL
+              )
+        )
+        "#,
+    )
+    .bind(account_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(row.get::<bool, _>("exists"))
+}
+
 /// Create a batch: lock candidates, insert members, store PDF bytes.
 pub async fn create_batch(
     pool: &PgPool,
@@ -650,7 +673,10 @@ async fn finalize_batch(
 
     tx.commit().await?;
 
-    let pdf_bytes = crate::batch_pdf::render_batch_pdf(
+    // Store the 2-up Summary List PDF so the stored bytes (web download,
+    // resend-by-email) match the 2-up file the scheduler emails — no more
+    // 1-page-per-A4 prints.
+    let pdf_bytes = crate::batch_pdf::render_batch_pdf_2up(
         batch_id,
         session,
         &format_wib(now),
@@ -1070,7 +1096,9 @@ pub async fn regenerate_batch_pdf(pool: &PgPool, id: Uuid) -> Result<BatchDetail
         })
         .collect();
 
-    let pdf_bytes = crate::batch_pdf::render_batch_pdf(
+    // Regenerate as 2-up to match the scheduler-emailed file (and the stored
+    // bytes of newly created batches).
+    let pdf_bytes = crate::batch_pdf::render_batch_pdf_2up(
         detail.summary.id,
         session,
         &detail.summary.created_at_wib,

@@ -364,7 +364,7 @@ async fn main() -> anyhow::Result<()> {
                 auto_relogin: cfg.auto_relogin,
             };
             println!(
-                "worker: new every {}s, cancel {:02}:{:02} local, work {:02}:{:02}–{:02}:{:02} WIB, auto_relogin={}, webhook={}, wazapin_instant={}, wazapin_cancel={}",
+                "worker: new every {}s, cancel {:02}:{:02} local, work {:02}:{:02}–{:02}:{:02} WIB, batch_pagi {}, batch_siang {}, instant_batch_every {}m, auto_relogin={}, webhook={}, wazapin_instant={}, wazapin_cancel={}",
                 wcfg.new_interval_secs,
                 wcfg.cancel_hour_local,
                 wcfg.cancel_minute_local,
@@ -372,6 +372,14 @@ async fn main() -> anyhow::Result<()> {
                 wcfg.work_hour_start_min % 60,
                 wcfg.work_hour_end_min / 60,
                 wcfg.work_hour_end_min % 60,
+                std::env::var("BATCH_PAGI_HOUR")
+                    .unwrap_or_else(|_| "07:50".into()),
+                std::env::var("BATCH_SIANG_HOUR")
+                    .unwrap_or_else(|_| "13:05".into()),
+                std::env::var("INSTANT_BATCH_INTERVAL_MIN")
+                    .ok()
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(5),
                 wcfg.auto_relogin,
                 wcfg.wa_webhook_url.is_some(),
                 wcfg.wazapin

@@ -1985,6 +1985,38 @@ pub async fn claim_pending_outbox(pool: &PgPool, limit: i64) -> Result<Vec<Outbo
         .collect())
 }
 
+/// List pending `order.created` outbox events (available now) for the
+/// scheduled instant-batch job. Urgency is filtered in Rust via
+/// `notify::payload_is_urgent` so the keyword list stays in one place.
+pub async fn list_pending_instant_outbox(pool: &PgPool, limit: i64) -> Result<Vec<OutboxEvent>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT id, event_type, order_id, platform_order_id, payload, status, created_at, sent_at
+        FROM notification_outbox
+        WHERE status = 'pending' AND available_at <= now() AND event_type = 'order.created'
+        ORDER BY id ASC
+        LIMIT $1
+        "#,
+    )
+    .bind(limit.clamp(1, 200))
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| OutboxEvent {
+            id: row.get("id"),
+            event_type: row.get("event_type"),
+            order_id: row.get("order_id"),
+            platform_order_id: row.get("platform_order_id"),
+            payload: row.get("payload"),
+            status: row.get("status"),
+            created_at: row.get("created_at"),
+            sent_at: row.get("sent_at"),
+        })
+        .collect())
+}
+
 pub async fn mark_outbox_sent(pool: &PgPool, id: i64) -> Result<()> {
     sqlx::query(
         r#"

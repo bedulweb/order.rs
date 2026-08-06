@@ -1,21 +1,27 @@
 //! Scheduled ops jobs run by the worker on a WIB clock:
 //!
-//! - **Batch pagi** (`BATCH_PAGI_HOUR`/`BATCH_PAGI_MINUTE`, default 07:50 WIB):
+//! - **Batch pagi** (`BATCH_PAGI_HOUR`/`BATCH_PAGI_MINUTE`, default 08:00 WIB):
 //!   claim the backlog into a morning batch, render the 2-up Summary List PDF,
 //!   auto-mark it printed in BigSeller, and email it to `RESEND_TO` (e.g. the
 //!   Epson email-print address). Runs once per WIB day.
+//! - **Batch siang** (`BATCH_SIANG_HOUR`/`BATCH_SIANG_MINUTE`, default 13:05 WIB):
+//!   same flow for the afternoon session (backlog accumulated since morning).
+//!   Runs once per WIB day.
 //! - **Rekap sore** (`REKAP_HOUR`/`REKAP_MINUTE`, default 17:00 WIB): send the
 //!   daily infographic PNG to the WhatsApp group. Runs once per WIB day.
 //! - **Cancel printed**: send a cancel card for today's (ordered_at in WIB day)
 //!   cancels whose Summary List was already printed. Runs once per WIB day,
 //!   right after the cancel sync window.
+//! - **Instant batch** (`INSTANT_BATCH_INTERVAL_MIN`, default 5): within
+//!   working hours, combine pending urgent `order.created` notifications into
+//!   one card per interval (instead of one WA message per order).
 
 use crate::batch::{self, BatchSession};
 use crate::config::Config;
 use crate::email;
 use crate::error::Result;
 use crate::wazapin::{WazapinClient, WazapinConfig};
-use chrono::{Datelike, Duration, FixedOffset, Timelike, Utc};
+use chrono::{DateTime, Datelike, Duration, FixedOffset, Timelike, Utc};
 use sqlx::{PgPool, Row};
 
 pub const WIB_OFFSET: i32 = 7 * 3600;
@@ -25,8 +31,11 @@ pub struct Scheduler {
     pub cfg: Config,
     /// True once per WIB day for each job (guards against duplicate runs).
     pub ran_batch_pagi_day: Option<u32>,
+    pub ran_batch_siang_day: Option<u32>,
     pub ran_rekap_day: Option<u32>,
     pub ran_cancel_printed_day: Option<u32>,
+    /// Last instant-batch run (periodic within working hours).
+    pub last_instant_batch_at: Option<DateTime<Utc>>,
 }
 
 /// WIB "yday" (ordinal within the year) for dedupe — changes at WIB midnight.
@@ -64,13 +73,22 @@ fn env_hhmm(key: &str, default: (u32, u32)) -> (u32, u32) {
     (h.min(23), m.min(59))
 }
 
+/// True when the periodic instant batch should fire: never run before
+/// (`None`) or at least `interval_min` minutes after the last run.
+fn instant_batch_due(last: Option<DateTime<Utc>>, now: DateTime<Utc>, interval_min: u64) -> bool {
+    match last {
+        None => true,
+        Some(t) => now >= t + Duration::minutes(interval_min as i64),
+    }
+}
+
 /// One worker-tick check: run each job whose WIB clock has passed its target
 /// hour and hasn't run yet today. Returns true if anything ran.
 pub async fn tick(s: &mut Scheduler) -> Result<bool> {
     let mut ran = false;
     let yday = wib_yday();
 
-    let (bh, bm) = env_hhmm("BATCH_PAGI_HOUR", (7, 50));
+    let (bh, bm) = env_hhmm("BATCH_PAGI_HOUR", (8, 0));
     if due(bh, bm) && s.ran_batch_pagi_day != Some(yday) {
         match run_batch_pagi(s).await {
             Ok(()) => {
@@ -80,6 +98,19 @@ pub async fn tick(s: &mut Scheduler) -> Result<bool> {
             Err(e) => {
                 tracing::warn!(error = %e, "batch pagi job failed");
                 // Keep retrying later ticks of the same day (e.g. transient DB).
+            }
+        }
+    }
+
+    let (sh, sm) = env_hhmm("BATCH_SIANG_HOUR", (13, 5));
+    if due(sh, sm) && s.ran_batch_siang_day != Some(yday) {
+        match run_batch_siang(s).await {
+            Ok(()) => {
+                s.ran_batch_siang_day = Some(yday);
+                ran = true;
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "batch siang job failed");
             }
         }
     }
@@ -122,76 +153,92 @@ pub async fn tick(s: &mut Scheduler) -> Result<bool> {
         }
     }
 
+    // Instant batch: combine pending urgent order.created notifications into
+    // one card per interval (default 5 min), only within working hours — so a
+    // morning rush produces a single combined card instead of one WA message
+    // per order (same pattern as the daily cancel list).
+    let ib_interval: u64 = std::env::var("INSTANT_BATCH_INTERVAL_MIN")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(5)
+        .max(1);
+    let now = Utc::now();
+    if crate::batch::is_within_working_hours(
+        now,
+        crate::batch::WORK_HOUR_START_MIN,
+        crate::batch::WORK_HOUR_END_MIN,
+    ) && instant_batch_due(s.last_instant_batch_at, now, ib_interval)
+    {
+        match run_instant_batch(s).await {
+            Ok(()) => {
+                s.last_instant_batch_at = Some(now);
+                ran = true;
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "instant batch job failed");
+                // Keep timer unset → retry on the next tick (~60s).
+            }
+        }
+    }
+
     Ok(ran)
 }
 
 /// Batch pagi: claim backlog → 2-up PDF → auto-mark printed → email to RESEND_TO.
 pub async fn run_batch_pagi(s: &Scheduler) -> Result<()> {
+    run_batch_email(s, BatchSession::Morning).await
+}
+
+/// Batch siang: same flow for the afternoon session (backlog since morning).
+pub async fn run_batch_siang(s: &Scheduler) -> Result<()> {
+    run_batch_email(s, BatchSession::Afternoon).await
+}
+
+/// Shared morning/afternoon batch flow: claim backlog for `session`, render the
+/// 2-up Summary List PDF, auto-mark it printed in BigSeller, and email it to
+/// `RESEND_TO` (e.g. the Epson email-print address).
+pub async fn run_batch_email(s: &Scheduler, session: BatchSession) -> Result<()> {
     let email_cfg = s.cfg.smtp.as_ref().ok_or_else(|| {
-        crate::error::Error::Other("RESEND_API_KEY not set for batch pagi".into())
+        crate::error::Error::Other("RESEND_API_KEY not set for batch email".into())
     })?;
     let to = email_cfg
         .to
         .as_deref()
-        .ok_or_else(|| crate::error::Error::Other("RESEND_TO not set for batch pagi".into()))?;
+        .ok_or_else(|| crate::error::Error::Other("RESEND_TO not set for batch email".into()))?;
 
-    let detail = batch::create_batch(&s.pool, BatchSession::Morning, None).await?;
-    let session = BatchSession::parse(&detail.summary.session)
-        .ok_or_else(|| crate::error::Error::Other("invalid session".into()))?;
+    // Empty backlog → treat the session as done (no retry storm, no empty PDF).
+    if !batch::has_backlog(&s.pool, None).await? {
+        tracing::info!(session = %session.as_str(), "batch: tidak ada backlog, skip email");
+        return Ok(());
+    }
 
-    let pdf_lines: Vec<batch::PdfOrderLine> = detail
-        .members
-        .iter()
-        .map(|m| batch::PdfOrderLine {
-            platform_order_id: m.platform_order_id.clone(),
-            platform: m.platform.clone().unwrap_or_else(|| "-".into()),
-            carrier: m.carrier_snapshot.clone().unwrap_or_else(|| "-".into()),
-            is_urgent: m.is_urgent,
-            ordered_at_wib: m
-                .ordered_at
-                .map(batch::format_wib)
-                .unwrap_or_else(|| "-".into()),
-            items: m.items.clone(),
-        })
-        .collect();
+    let detail = batch::create_batch(&s.pool, session, None).await?;
 
-    let bytes = crate::batch_pdf::render_batch_pdf_2up(
-        detail.summary.id,
-        session,
-        &detail.summary.created_at_wib,
-        detail.summary.order_count,
-        detail.summary.urgent_count,
-        &pdf_lines,
-    )
-    .await?;
+    // Reuse the stored (2-up) PDF bytes — same file the web UI downloads and
+    // the resend tool emails — instead of rendering a second copy.
+    let (pdf_filename, bytes) = batch::get_batch_pdf(&s.pool, detail.summary.id)
+        .await?
+        .ok_or_else(|| crate::error::Error::Other("batch pdf not stored".into()))?;
 
     // Auto-mark Summary List printed in BigSeller (same as the web flow).
     let ids: Vec<i64> = detail.members.iter().map(|m| m.order_id).collect();
     if let Err(e) = batch::mark_summary_printed(&s.cfg.base_url, &s.cfg.session_path, &ids).await {
-        tracing::warn!(error = %e, count = ids.len(), "batch pagi auto-mark failed (email sent anyway)");
+        tracing::warn!(error = %e, count = ids.len(), "batch email auto-mark failed (email sent anyway)");
     }
 
     let subject = format!(
-        "Summary List 2-up — {} pesanan · {} urgent",
-        detail.summary.order_count, detail.summary.urgent_count
+        "Summary List 2-up ({}) — {} pesanan · {} urgent",
+        session.as_str(),
+        detail.summary.order_count,
+        detail.summary.urgent_count
     );
-    let msg_id = email::send_pdf_only(
-        email_cfg,
-        to,
-        &subject,
-        &bytes,
-        &detail
-            .summary
-            .pdf_filename
-            .clone()
-            .unwrap_or_else(|| "summary-list-2up.pdf".into()),
-    )
-    .await?;
+    let msg_id = email::send_pdf_only(email_cfg, to, &subject, &bytes, &pdf_filename).await?;
     tracing::info!(
         batch_id = %detail.summary.id,
+        session = %session.as_str(),
         orders = detail.summary.order_count,
         msg_id = %msg_id,
-        "batch pagi emailed"
+        "batch email sent"
     );
     Ok(())
 }
@@ -286,4 +333,102 @@ pub async fn run_cancel_printed(s: &Scheduler) -> Result<()> {
     let msg_id = crate::notify::send_cancel_orders(&client, orders).await?;
     tracing::info!(msg_id = %msg_id, "cancel printed sent");
     Ok(())
+}
+
+/// Instant batch: combine all pending urgent `order.created` notifications
+/// into ONE combined card (default every 5 min within working hours) instead
+/// of one WA message per order — same "query + one card" pattern as cancel.
+pub async fn run_instant_batch(s: &Scheduler) -> Result<()> {
+    let wz_cfg = s
+        .cfg
+        .wazapin
+        .clone()
+        .or_else(WazapinConfig::from_env)
+        .ok_or_else(|| crate::error::Error::Other("WAZAPIN not set for instant batch".into()))?;
+    let client = WazapinClient::new(wz_cfg)?;
+    if !client.config().enabled_for_instant() {
+        return Ok(());
+    }
+
+    // Cap per card so a huge rush does not produce a giant PNG; the remainder
+    // stays pending and goes out on the next interval.
+    const MAX_ORDERS: usize = 50;
+    let events = crate::store::list_pending_instant_outbox(&s.pool, 200).await?;
+    let urgent: Vec<_> = events
+        .into_iter()
+        .filter(|ev| crate::notify::payload_is_urgent(&ev.payload))
+        .take(MAX_ORDERS)
+        .collect();
+
+    if urgent.is_empty() {
+        tracing::info!("instant batch: tidak ada pesanan instant menunggu");
+        return Ok(());
+    }
+
+    let mut orders = Vec::new();
+    let mut sent_ids = Vec::new();
+    for ev in &urgent {
+        let Some(oid) = ev.order_id else {
+            continue;
+        };
+        match crate::notify::load_notify_order(&s.pool, oid).await {
+            Ok(o) => {
+                orders.push(o);
+                sent_ids.push(ev.id);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    outbox_id = ev.id,
+                    order_id = oid,
+                    error = %e,
+                    "instant batch: load order failed"
+                );
+                crate::store::mark_outbox_failed(&s.pool, ev.id, &e.to_string()).await?;
+            }
+        }
+    }
+
+    if orders.is_empty() {
+        return Ok(());
+    }
+    let msg_id = crate::notify::send_instant_orders(&client, orders).await?;
+    for id in &sent_ids {
+        crate::store::mark_outbox_sent(&s.pool, *id).await?;
+    }
+    tracing::info!(
+        msg_id = %msg_id,
+        count = sent_ids.len(),
+        "instant batch sent"
+    );
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    #[test]
+    fn instant_batch_due_never_run_is_due() {
+        assert!(instant_batch_due(None, Utc::now(), 5));
+    }
+
+    #[test]
+    fn instant_batch_due_respects_interval() {
+        let now = Utc.with_ymd_and_hms(2026, 8, 5, 1, 0, 0).unwrap();
+        let last = now - Duration::minutes(4);
+        assert!(!instant_batch_due(Some(last), now, 5));
+        let last = now - Duration::minutes(5);
+        assert!(instant_batch_due(Some(last), now, 5));
+        let last = now - Duration::minutes(30);
+        assert!(instant_batch_due(Some(last), now, 5));
+    }
+
+    #[test]
+    fn instant_batch_due_handles_day_rollover() {
+        // Last run yesterday 23:59, now today 00:01 → elapsed > interval.
+        let last = Utc.with_ymd_and_hms(2026, 8, 4, 16, 59, 0).unwrap();
+        let now = Utc.with_ymd_and_hms(2026, 8, 5, 0, 1, 0).unwrap();
+        assert!(instant_batch_due(Some(last), now, 5));
+    }
 }

@@ -899,13 +899,16 @@ pub async fn run_worker(pool: PgPool, cfg: Config, app_cfg: WorkerConfig) -> Res
         ocr: None,
     };
 
-    // Scheduled ops jobs (batch pagi → email printer, rekap sore, cancel printed).
+    // Scheduled ops jobs (batch pagi/siang → email printer, rekap sore, cancel
+    // printed, instant batch).
     let mut scheduler = crate::scheduler::Scheduler {
         pool: pool.clone(),
         cfg,
         ran_batch_pagi_day: None,
+        ran_batch_siang_day: None,
         ran_rekap_day: None,
         ran_cancel_printed_day: None,
+        last_instant_batch_at: None,
     };
 
     let ctx = SyncContext {
@@ -1061,29 +1064,18 @@ async fn drain_outbox(pool: &PgPool, cfg: &WorkerConfig) -> Result<()> {
 
     let http = reqwest::Client::new();
     for ev in events {
-        // Working-hours gate: urgent/instant "order.created" notifications are
-        // only delivered inside the work window (default 07:50–17:00 WIB).
-        // Outside it, defer the event to the next work start so the group is
-        // not pinged overnight — it is then sent automatically at open.
+        // Urgent/instant "order.created" notifications are batched by the
+        // scheduled instant-batch job (every INSTANT_BATCH_INTERVAL_MIN within
+        // working hours) into one combined card — no more one message per order
+        // during a morning rush. Leave them pending here; the job marks them
+        // sent. The job is gated to working hours, so nothing pings overnight.
         if ev.event_type == "order.created"
             && crate::notify::payload_is_urgent(&ev.payload)
-            && !crate::batch::is_within_working_hours(
-                Utc::now(),
-                cfg.work_hour_start_min,
-                cfg.work_hour_end_min,
-            )
         {
-            let until = crate::batch::next_work_start_utc(Utc::now(), cfg.work_hour_start_min);
-            crate::store::defer_outbox_until(pool, ev.id, until).await?;
-            info!(
-                outbox_id = ev.id,
-                deferred_until = %until.to_rfc3339(),
-                "instant notify deferred to working hours"
-            );
             continue;
         }
 
-        // 1) Instant → Wazapin group (image card)
+        // 1) Cancel → Wazapin group (per-event card, gated by summary-printed)
         if let Some(ref wz) = wazapin {
             match crate::notify::try_handle_outbox_wazapin(pool, wz, &ev).await {
                 Ok(true) => {
@@ -1095,7 +1087,7 @@ async fn drain_outbox(pool: &PgPool, cfg: &WorkerConfig) -> Result<()> {
                     warn!(
                         outbox_id = ev.id,
                         error = %e,
-                        "wazapin instant notify failed"
+                        "wazapin notify failed"
                     );
                     mark_outbox_failed(pool, ev.id, &e.to_string()).await?;
                     continue;

@@ -47,7 +47,7 @@ pub struct SummarySkuRow {
     pub image_url: Option<String>,
     /// package code `*last4` → total qty
     pub packages: BTreeMap<String, i32>,
-    /// package code `*last4` → urgent/instant qty
+    /// package code `*last4` → urgent/instant qty (marker only; qty stays combined)
     pub instant_packages: BTreeMap<String, i32>,
 }
 
@@ -736,9 +736,14 @@ mod tests {
 
     #[test]
     fn aggregate_tracks_instant_qty_under_matching_package() {
+        // Urgent + regular lines for the same SKU/package merge into ONE row
+        // with the combined qty (not split by urgency); the instant qty is
+        // tracked separately only as a marker.
         let mut instant = line("ORDER2672", "SKU-1", 1);
         instant.is_urgent = true;
         let rows = aggregate_summary_rows(&[line("ORDER2672", "SKU-1", 2), instant]);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].qty, 3);
         assert_eq!(rows[0].packages.get("*2672"), Some(&3));
         assert_eq!(rows[0].instant_packages.get("*2672"), Some(&1));
     }
