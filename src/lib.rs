@@ -42,6 +42,7 @@ pub mod session;
 pub mod store;
 pub mod sync;
 pub mod wazapin;
+pub mod webhook;
 
 pub use auth::{login, LoginResult};
 pub use config::Config;

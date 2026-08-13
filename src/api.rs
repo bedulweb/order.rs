@@ -94,6 +94,8 @@ pub fn router(state: ApiState) -> Router {
         // Mobile / consumer app
         .route("/v1/app/lookup/text", post(app_lookup_text))
         .route("/v1/app/lookup/photo", post(app_lookup_photo))
+        // Inbound Wazapin webhook (ops commands from the group)
+        .route("/v1/wazapin/webhook", post(crate::webhook::wazapin_webhook))
         .layer(DefaultBodyLimit::max(MAX_CATALOG_UPLOAD_BYTES + 64 * 1024))
         .layer(
             CorsLayer::new()
