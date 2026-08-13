@@ -1,0 +1,11 @@
+.git
+target
+logs
+deploy
+.env
+.env.*
+!.env.example
+.session.json
+*.session.json
+models/*.onnx
+web/node_modules
