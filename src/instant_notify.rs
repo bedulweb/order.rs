@@ -43,6 +43,10 @@ pub struct NotifyOrder {
     pub is_urgent: Option<bool>,
     pub ordered_at_wib: Option<String>,
     pub state: Option<String>,
+    /// Pesan/instruksi dari pembeli (buyerMessage BigSeller), ditampilkan
+    /// sebagai teks polos di bawah meta order (tanpa kotak/label).
+    #[serde(default)]
+    pub buyer_message: Option<String>,
     pub items: Vec<NotifyItem>,
 }
 
@@ -154,6 +158,60 @@ fn trunc(s: &str, max: usize) -> String {
     format!("{t}…")
 }
 
+/// Maksimal baris pesan pembeli di kartu (sisanya dipotong dengan …).
+const NOTE_MAX_LINES: usize = 4;
+/// Perkiraan karakter per baris pesan (font-size 19, lebar konten kartu).
+const NOTE_CHARS_PER_LINE: usize = 76;
+/// Jarak antar baris pesan (px, skala SVG 1080).
+const NOTE_LINE_H: f64 = 26.0;
+
+/// Greedy word-wrap untuk pesan pembeli (SVG tidak punya auto-wrap).
+fn buyer_note_lines(msg: &str) -> Vec<String> {
+    let words: Vec<&str> = msg.split_whitespace().collect();
+    let mut lines: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut overflowed = false;
+    for &word in &words {
+        let candidate = if cur.is_empty() {
+            word.to_string()
+        } else {
+            format!("{cur} {word}")
+        };
+        if candidate.chars().count() > NOTE_CHARS_PER_LINE && !cur.is_empty() {
+            lines.push(std::mem::take(&mut cur));
+            if lines.len() == NOTE_MAX_LINES {
+                overflowed = true;
+                break;
+            }
+            cur = word.to_string();
+        } else {
+            cur = candidate;
+        }
+    }
+    if !overflowed && !cur.is_empty() {
+        lines.push(cur);
+    }
+    if overflowed {
+        if let Some(last) = lines.last_mut() {
+            let t: String = last
+                .chars()
+                .take(NOTE_CHARS_PER_LINE.saturating_sub(1))
+                .collect();
+            *last = format!("{t}…");
+        }
+    }
+    lines
+}
+
+/// Tinggi blok teks pesan pembeli (baris + jarak ke items).
+fn buyer_note_height(msg: Option<&str>) -> f64 {
+    let Some(m) = msg.filter(|m| !m.trim().is_empty()) else {
+        return 0.0;
+    };
+    let lines = buyer_note_lines(m).len().max(1) as f64;
+    lines * NOTE_LINE_H + 14.0
+}
+
 fn font() -> &'static str {
     "DejaVu Sans, Liberation Sans, Noto Sans, sans-serif"
 }
@@ -236,6 +294,7 @@ pub fn card_to_svg(card: &NotifyCard, thumbs: &HashMap<String, String>) -> Strin
     let mut body_h = 20.0f64;
     for order in &card.orders {
         body_h += 64.0;
+        body_h += buyer_note_height(order.buyer_message.as_deref());
         body_h += order.items.len() as f64 * (THUMB + ITEM_GAP);
         body_h += ORDER_GAP;
     }
@@ -280,6 +339,26 @@ pub fn card_to_svg(card: &NotifyCard, thumbs: &HashMap<String, String>) -> Strin
             code = esc(&code),
         ));
         y = chip_y + 58.0 + 14.0;
+
+        // Pesan pembeli (buyerMessage) — teks polos, tanpa kotak/label.
+        if let Some(msg) = order
+            .buyer_message
+            .as_deref()
+            .filter(|m| !m.trim().is_empty())
+        {
+            let lines = buyer_note_lines(msg);
+            for (i, line) in lines.iter().enumerate() {
+                body.push_str(&format!(
+                    r##"  <text x="{tx}" y="{ty}" font-family="{ff}" font-size="19" fill="#475569">{line}</text>
+"##,
+                    tx = content_x,
+                    ty = y + 20.0 + i as f64 * NOTE_LINE_H,
+                    line = esc(&trunc(line, NOTE_CHARS_PER_LINE)),
+                    ff = font(),
+                ));
+            }
+            y += buyer_note_height(order.buyer_message.as_deref());
+        }
 
         for item in &order.items {
             let name = item
@@ -501,6 +580,7 @@ mod tests {
             is_urgent: Some(true),
             ordered_at_wib: Some("2026-07-21 20:47:04 WIB".into()),
             state: Some("new".into()),
+            buyer_message: Some("tlg krm instan hr ini ya, makasih".into()),
             items: vec![
                 NotifyItem {
                     sku: Some("OB-0136-LB".into()),
@@ -524,6 +604,9 @@ mod tests {
         assert!(svg.contains("#2563EB") || svg.contains("#1D4ED8"));
         assert!(svg.contains("Tencel Piyama") || svg.contains("Piyama Panjang"));
         assert!(svg.contains("Obayito Singlet"));
+        assert!(svg.contains("tlg krm instan hr ini ya"));
+        // teks polos: tanpa kotak maupun label catatan
+        assert!(!svg.contains("CATATAN"));
         // primary name should not be the bare SKU code as title for tencel line
         assert!(!svg.contains(">0B-0134-S<"));
         let png = daily_report::svg_to_png(&svg).expect("png");

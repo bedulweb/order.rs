@@ -1,4 +1,5 @@
-//! Outbox → WhatsApp group notifications (instant + printed-cancel via Wazapin).
+//! Outbox → WhatsApp group notifications (instant via Wazapin; cancel cards
+//! are sent once per day by the scheduled cancel-printed job).
 
 use crate::batch::{carrier_display, format_wib, is_urgent_carrier};
 use crate::cancel_notify::{self, CancelItem, CancelOrder};
@@ -40,7 +41,7 @@ pub async fn load_notify_order(pool: &PgPool, order_id: i64) -> Result<NotifyOrd
         r#"
         SELECT id, platform_order_id, platform,
                buyer_shipping_carrier, shipment_provider, shipping_carrier_name,
-               ordered_at, state
+               ordered_at, state, buyer_message
         FROM orders
         WHERE id = $1
         "#,
@@ -121,6 +122,7 @@ pub async fn load_notify_order(pool: &PgPool, order_id: i64) -> Result<NotifyOrd
         )),
         ordered_at_wib: ordered.map(format_wib),
         state: row.get("state"),
+        buyer_message: row.get("buyer_message"),
         items,
     })
 }
@@ -146,7 +148,14 @@ pub async fn send_instant_notify(
             .take(24)
             .collect::<String>()
     );
-    let r = wazapin.send_png_bytes(&png, &fname, &caption).await?;
+    let r = wazapin
+        .send_png_bytes(
+            &png,
+            &fname,
+            &caption,
+            wazapin.config().mention_all_enabled(),
+        )
+        .await?;
     info!(
         order_id,
         platform_order_id = %order.platform_order_id,
@@ -310,7 +319,9 @@ pub async fn send_cancel_orders(
     let n = orders.len();
     let png = cancel_notify::render_cancel_png(orders).await?;
     let fname = format!("cancel-list-{n}.png");
-    let r = wazapin.send_png_bytes(&png, &fname, &caption).await?;
+    let r = wazapin
+        .send_png_bytes(&png, &fname, &caption, false)
+        .await?;
     info!(order_count = n, msg_id = %r.id, "cancel list notify sent");
     Ok(r.id)
 }
@@ -337,13 +348,45 @@ pub async fn send_instant_orders(
     let n = orders.len();
     let png = instant_notify::render_notify_png(orders).await?;
     let fname = format!("instant-list-{n}.png");
-    let r = wazapin.send_png_bytes(&png, &fname, &caption).await?;
+    let r = wazapin
+        .send_png_bytes(
+            &png,
+            &fname,
+            &caption,
+            wazapin.config().mention_all_enabled(),
+        )
+        .await?;
     info!(order_count = n, msg_id = %r.id, "instant list notify sent");
     Ok(r.id)
 }
 
-/// Handle one outbox row for Wazapin (instant created or printed cancel).
+/// Send the actual Summary List PDF (the same bytes that went to the printer
+/// email) to the WhatsApp group as a document. The PDF is uploaded to a public
+/// raw URL (litterbox) first because Wazapin's upload endpoint only accepts
+/// images and temp.sh serves an HTML page instead of raw bytes.
+pub async fn send_batch_pdf_to_group(
+    wazapin: &WazapinClient,
+    pdf_bytes: &[u8],
+    filename: &str,
+    caption: &str,
+) -> Result<String> {
+    let url = crate::daily_report::upload_litterbox(pdf_bytes, filename, "72h").await?;
+    let r = wazapin.send_document(&url, filename, caption).await?;
+    info!(
+        msg_id = %r.id,
+        filename,
+        %url,
+        "batch pdf sent to group as document"
+    );
+    Ok(r.id)
+}
+
+/// Handle one outbox row for Wazapin (instant created).
 /// Returns true if this event was fully handled here (caller should mark sent/failed).
+///
+/// Cancel notifications are intentionally NOT handled here: cancel cards are
+/// sent once per day by the scheduled cancel-printed job (`run_cancel_printed`),
+/// never per-event.
 pub async fn try_handle_outbox_wazapin(
     pool: &PgPool,
     wazapin: &WazapinClient,
@@ -369,24 +412,6 @@ pub async fn try_handle_outbox_wazapin(
                 .order_id
                 .ok_or_else(|| Error::Other("outbox order.created missing order_id".into()))?;
             send_instant_notify(pool, wazapin, oid).await?;
-            Ok(true)
-        }
-        "order.canceled" => {
-            if !wazapin.config().enabled_for_cancel() {
-                return Ok(false);
-            }
-            let oid = ev
-                .order_id
-                .ok_or_else(|| Error::Other("outbox order.canceled missing order_id".into()))?;
-            // Defense in depth: only if still marked summary-printed.
-            if !store::order_summary_was_printed(pool, oid).await? {
-                info!(
-                    order_id = oid,
-                    "order.canceled outbox skipped — not summary-printed"
-                );
-                return Ok(true); // mark sent; no WA spam for unprinted cancels
-            }
-            send_cancel_notify(pool, wazapin, oid).await?;
             Ok(true)
         }
         _ => Ok(false),
@@ -419,6 +444,7 @@ mod tests {
             is_urgent: Some(true),
             ordered_at_wib: Some("2026-07-21 20:47:04 WIB".into()),
             state: Some("new".into()),
+            buyer_message: None,
             items: vec![NotifyItem {
                 sku: Some("A".into()),
                 name: Some("X".into()),
@@ -476,6 +502,8 @@ mod tests {
             org_slug: None,
             notify_instant: true,
             notify_cancel: true,
+            notify_batch: true,
+            mention_all: false,
         };
         let client = crate::wazapin::WazapinClient::new(cfg).expect("client");
         let rt = tokio::runtime::Builder::new_current_thread()

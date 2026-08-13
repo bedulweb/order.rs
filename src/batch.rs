@@ -16,6 +16,7 @@ pub const WIB_OFFSET_SECS: i32 = 7 * 3600;
 pub const BATCH_TIMEZONE: &str = "Asia/Jakarta";
 
 const URGENT_KEYWORDS: &[&str] = &[
+    "anteraja",
     "instant",
     "sameday",
     "same day",
@@ -1162,6 +1163,7 @@ mod tests {
         assert!(is_urgent_carrier(Some("JNE REG"), Some("gosend"), None));
         assert!(is_urgent_carrier(Some("Prioritas"), None, None));
         assert!(is_urgent_carrier(Some("paxel same-day"), None, None));
+        assert!(is_urgent_carrier(None, Some("Anteraja"), None));
         assert!(is_urgent_carrier(Some("SAME DAY"), None, None));
         assert!(is_urgent_carrier(Some("sameday"), None, None));
         assert!(is_urgent_carrier(Some("gojek"), None, None));

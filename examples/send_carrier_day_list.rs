@@ -72,7 +72,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     let fname = format!("carrier-day-{day}.png");
     println!("sending …");
-    let r = client.send_png_bytes(&png, &fname, &caption).await?;
+    let r = client.send_png_bytes(&png, &fname, &caption, false).await?;
     println!("ok msg_id={}", r.id);
     Ok(())
 }

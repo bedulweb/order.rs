@@ -20,6 +20,11 @@ pub struct WazapinConfig {
     pub notify_instant: bool,
     /// When true, worker sends cancel PNG for summary-printed cancels.
     pub notify_cancel: bool,
+    /// When true, morning/afternoon batch summary card also goes to the group.
+    pub notify_batch: bool,
+    /// When true, instant-order cards mention all group members (`@all`).
+    /// Only supported on unofficial WhatsApp channels.
+    pub mention_all: bool,
 }
 
 impl WazapinConfig {
@@ -42,6 +47,8 @@ impl WazapinConfig {
             .filter(|s| !s.is_empty());
         let notify_instant = env_flag("WAZAPIN_NOTIFY_INSTANT", true);
         let notify_cancel = env_flag("WAZAPIN_NOTIFY_CANCEL", true);
+        let notify_batch = env_flag("WAZAPIN_NOTIFY_BATCH", true);
+        let mention_all = env_flag("WAZAPIN_MENTION_ALL", false);
         Some(Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key,
@@ -50,6 +57,8 @@ impl WazapinConfig {
             org_slug,
             notify_instant,
             notify_cancel,
+            notify_batch,
+            mention_all,
         })
     }
 
@@ -61,8 +70,17 @@ impl WazapinConfig {
         self.notify_cancel
     }
 
+    pub fn enabled_for_batch(&self) -> bool {
+        self.notify_batch
+    }
+
+    /// Instant cards mention all group members (`@all`).
+    pub fn mention_all_enabled(&self) -> bool {
+        self.mention_all
+    }
+
     pub fn enabled_any(&self) -> bool {
-        self.notify_instant || self.notify_cancel
+        self.notify_instant || self.notify_cancel || self.notify_batch
     }
 }
 
@@ -227,13 +245,29 @@ impl WazapinClient {
     }
 
     pub async fn send_image(&self, media_url: &str, caption: &str) -> Result<SendResult> {
+        let content = json!({
+            "media_url": media_url,
+            "caption": caption,
+        });
+        self.send_image_content(&content).await
+    }
+
+    /// Send a document (e.g. PDF) from a public `media_url` (Wazapin downloads
+    /// it and forwards as a WhatsApp document). Filename is shown in chat.
+    pub async fn send_document(
+        &self,
+        media_url: &str,
+        filename: &str,
+        caption: &str,
+    ) -> Result<SendResult> {
         self.ensure_channel_ready().await?;
         let payload = json!({
             "channel_id": self.cfg.channel_id,
             "to": self.cfg.group_jid,
-            "type": "image",
+            "type": "document",
             "content": {
                 "media_url": media_url,
+                "filename": filename,
                 "caption": caption,
             },
         });
@@ -242,18 +276,40 @@ impl WazapinClient {
     }
 
     /// Upload PNG then send as image with caption.
+    /// When `mention_all` is true, the message includes `mention: { all: true }`
+    /// so WhatsApp notifies every group member (unofficial channels only).
     pub async fn send_png_bytes(
         &self,
         png: &[u8],
         filename: &str,
         caption: &str,
+        mention_all: bool,
     ) -> Result<SendResult> {
         self.ensure_channel_ready().await?;
         let media_url = self.upload_image(png, filename).await?;
         info!(%media_url, "wazapin media uploaded");
-        let r = self.send_image(&media_url, caption).await?;
-        info!(id = %r.id, status = %r.status, "wazapin image queued");
+        let mut content = json!({
+            "media_url": media_url,
+            "caption": caption,
+        });
+        if mention_all {
+            content["mention"] = json!({ "all": true });
+        }
+        let r = self.send_image_content(&content).await?;
+        info!(id = %r.id, status = %r.status, mention_all, "wazapin image queued");
         Ok(r)
+    }
+
+    async fn send_image_content(&self, content: &Value) -> Result<SendResult> {
+        self.ensure_channel_ready().await?;
+        let payload = json!({
+            "channel_id": self.cfg.channel_id,
+            "to": self.cfg.group_jid,
+            "type": "image",
+            "content": content,
+        });
+        let v = self.post_json("/v1/messages", &payload).await?;
+        parse_send(&v)
     }
 }
 
@@ -307,9 +363,12 @@ mod tests {
             org_slug: None,
             notify_instant: true,
             notify_cancel: true,
+            notify_batch: true,
+            mention_all: false,
         };
         assert!(cfg.enabled_for_instant());
         assert!(cfg.enabled_for_cancel());
+        assert!(cfg.enabled_for_batch());
     }
 
     #[test]

@@ -493,13 +493,19 @@ pub fn write_png(path: &Path, png: &[u8]) -> Result<()> {
 
 /// Upload PNG to temp.sh (`multipart file=`). Returns public URL.
 pub async fn upload_temp_sh(png: &[u8], filename: &str) -> Result<String> {
+    upload_temp_sh_bytes(png, filename, "image/png").await
+}
+
+/// Upload arbitrary bytes to temp.sh with an explicit MIME type (e.g. PDF).
+/// Returns the public URL.
+pub async fn upload_temp_sh_bytes(bytes: &[u8], filename: &str, mime: &str) -> Result<String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(60))
         .user_agent("order.rs-daily-rekap/0.1")
         .build()?;
-    let part = reqwest::multipart::Part::bytes(png.to_vec())
+    let part = reqwest::multipart::Part::bytes(bytes.to_vec())
         .file_name(filename.to_string())
-        .mime_str("image/png")
+        .mime_str(mime)
         .map_err(|e| Error::Other(format!("multipart: {e}")))?;
     let form = reqwest::multipart::Form::new().part("file", part);
     let resp = client
@@ -523,6 +529,45 @@ pub async fn upload_temp_sh(png: &[u8], filename: &str) -> Result<String> {
         )));
     }
     Ok(url.to_string())
+}
+
+/// Upload bytes to litterbox.catbox.moe and return the **direct raw URL** —
+/// used when Wazapin needs a public download link for a document (its own
+/// upload endpoint only accepts images, and temp.sh serves an HTML page
+/// instead of raw bytes, which corrupts WhatsApp downloads).
+///
+/// `retention` is like "72h" (max 72h) or "1h"/"1d".
+pub async fn upload_litterbox(bytes: &[u8], filename: &str, retention: &str) -> Result<String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(120))
+        .user_agent("Mozilla/5.0 (order.rs-batch)")
+        .build()?;
+    let part = reqwest::multipart::Part::bytes(bytes.to_vec())
+        .file_name(filename.to_string())
+        .mime_str("application/pdf")
+        .map_err(|e| Error::Other(format!("multipart: {e}")))?;
+    let form = reqwest::multipart::Form::new()
+        .text("reqtype", "fileupload")
+        .text("time", retention.to_string())
+        .part("fileToUpload", part);
+    let resp = client
+        .post("https://litterbox.catbox.moe/resources/internals/api.php")
+        .multipart(form)
+        .send()
+        .await?;
+    let status = resp.status();
+    let body = resp.text().await?;
+    if !status.is_success() {
+        return Err(Error::Other(format!(
+            "litterbox HTTP {status}: {}",
+            body.chars().take(200).collect::<String>()
+        )));
+    }
+    let url = body.trim().to_string();
+    if !url.starts_with("http") {
+        return Err(Error::Other(format!("litterbox upload failed: {body}")));
+    }
+    Ok(url)
 }
 
 pub fn default_png_path(date: NaiveDate) -> PathBuf {

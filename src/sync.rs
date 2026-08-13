@@ -1069,9 +1069,15 @@ async fn drain_outbox(pool: &PgPool, cfg: &WorkerConfig) -> Result<()> {
         // working hours) into one combined card — no more one message per order
         // during a morning rush. Leave them pending here; the job marks them
         // sent. The job is gated to working hours, so nothing pings overnight.
-        if ev.event_type == "order.created"
-            && crate::notify::payload_is_urgent(&ev.payload)
-        {
+        if ev.event_type == "order.created" && crate::notify::payload_is_urgent(&ev.payload) {
+            continue;
+        }
+
+        // Cancel cards are sent once per day by the scheduled cancel-printed
+        // job (`run_cancel_printed`), never per-event; mark sent so the outbox
+        // doesn't pile up (and cancels stay off the generic webhook as before).
+        if ev.event_type == "order.canceled" {
+            mark_outbox_sent(pool, ev.id).await?;
             continue;
         }
 

@@ -1,9 +1,10 @@
 //! Scheduled ops jobs run by the worker on a WIB clock:
 //!
 //! - **Batch pagi** (`BATCH_PAGI_HOUR`/`BATCH_PAGI_MINUTE`, default 08:00 WIB):
-//!   claim the backlog into a morning batch, render the 2-up Summary List PDF,
-//!   auto-mark it printed in BigSeller, and email it to `RESEND_TO` (e.g. the
-//!   Epson email-print address). Runs once per WIB day.
+//!   claim the backlog and render the 2-up Summary List PDF. Printer email and
+//!   automatic BigSeller printed marking are controlled by `AUTO_PRINT=false`
+//!   by default; the group notification remains independent. Runs once per WIB
+//!   day.
 //! - **Batch siang** (`BATCH_SIANG_HOUR`/`BATCH_SIANG_MINUTE`, default 13:05 WIB):
 //!   same flow for the afternoon session (backlog accumulated since morning).
 //!   Runs once per WIB day.
@@ -184,7 +185,8 @@ pub async fn tick(s: &mut Scheduler) -> Result<bool> {
     Ok(ran)
 }
 
-/// Batch pagi: claim backlog → 2-up PDF → auto-mark printed → email to RESEND_TO.
+/// Batch pagi: claim backlog and render the 2-up PDF; printer delivery is
+/// controlled by `AUTO_PRINT`.
 pub async fn run_batch_pagi(s: &Scheduler) -> Result<()> {
     run_batch_email(s, BatchSession::Morning).await
 }
@@ -194,17 +196,22 @@ pub async fn run_batch_siang(s: &Scheduler) -> Result<()> {
     run_batch_email(s, BatchSession::Afternoon).await
 }
 
-/// Shared morning/afternoon batch flow: claim backlog for `session`, render the
-/// 2-up Summary List PDF, auto-mark it printed in BigSeller, and email it to
-/// `RESEND_TO` (e.g. the Epson email-print address).
+/// Shared morning/afternoon batch flow: claim backlog and render the 2-up
+/// Summary List PDF. Automatic printer email + BigSeller `printed` marking are
+/// controlled by `AUTO_PRINT` (disabled by default); the group notification is
+/// independent and remains enabled when configured.
 pub async fn run_batch_email(s: &Scheduler, session: BatchSession) -> Result<()> {
-    let email_cfg = s.cfg.smtp.as_ref().ok_or_else(|| {
-        crate::error::Error::Other("RESEND_API_KEY not set for batch email".into())
-    })?;
-    let to = email_cfg
-        .to
-        .as_deref()
-        .ok_or_else(|| crate::error::Error::Other("RESEND_TO not set for batch email".into()))?;
+    let email_target = if s.cfg.auto_print {
+        let email_cfg = s.cfg.smtp.as_ref().ok_or_else(|| {
+            crate::error::Error::Other("RESEND_API_KEY not set for batch email".into())
+        })?;
+        let to = email_cfg.to.as_deref().ok_or_else(|| {
+            crate::error::Error::Other("RESEND_TO not set for batch email".into())
+        })?;
+        Some((email_cfg, to))
+    } else {
+        None
+    };
 
     // Empty backlog → treat the session as done (no retry storm, no empty PDF).
     if !batch::has_backlog(&s.pool, None).await? {
@@ -220,26 +227,62 @@ pub async fn run_batch_email(s: &Scheduler, session: BatchSession) -> Result<()>
         .await?
         .ok_or_else(|| crate::error::Error::Other("batch pdf not stored".into()))?;
 
-    // Auto-mark Summary List printed in BigSeller (same as the web flow).
-    let ids: Vec<i64> = detail.members.iter().map(|m| m.order_id).collect();
-    if let Err(e) = batch::mark_summary_printed(&s.cfg.base_url, &s.cfg.session_path, &ids).await {
-        tracing::warn!(error = %e, count = ids.len(), "batch email auto-mark failed (email sent anyway)");
-    }
-
     let subject = format!(
         "Summary List 2-up ({}) — {} pesanan · {} urgent",
         session.as_str(),
         detail.summary.order_count,
         detail.summary.urgent_count
     );
-    let msg_id = email::send_pdf_only(email_cfg, to, &subject, &bytes, &pdf_filename).await?;
-    tracing::info!(
-        batch_id = %detail.summary.id,
-        session = %session.as_str(),
-        orders = detail.summary.order_count,
-        msg_id = %msg_id,
-        "batch email sent"
-    );
+
+    if let Some((email_cfg, to)) = email_target {
+        // Only the automatic printer path marks orders as printed. Manual print
+        // endpoints keep their existing behavior and are independent of this flag.
+        let ids: Vec<i64> = detail.members.iter().map(|m| m.order_id).collect();
+        if let Err(e) =
+            batch::mark_summary_printed(&s.cfg.base_url, &s.cfg.session_path, &ids).await
+        {
+            tracing::warn!(error = %e, count = ids.len(), "batch auto-print mark failed (email sent anyway)");
+        }
+
+        let msg_id = email::send_pdf_only(email_cfg, to, &subject, &bytes, &pdf_filename).await?;
+        tracing::info!(
+            batch_id = %detail.summary.id,
+            session = %session.as_str(),
+            orders = detail.summary.order_count,
+            msg_id = %msg_id,
+            "batch printer email sent"
+        );
+    } else {
+        tracing::info!(
+            batch_id = %detail.summary.id,
+            session = %session.as_str(),
+            orders = detail.summary.order_count,
+            "batch auto-print disabled; PDF remains available for manual printing"
+        );
+    }
+
+    // Send the actual Summary List PDF to the WhatsApp group as a document.
+    // This notification is independent of the automatic printer setting.
+    if let Some(wz_cfg) = s.cfg.wazapin.clone().or_else(WazapinConfig::from_env) {
+        if wz_cfg.enabled_for_batch() {
+            match WazapinClient::new(wz_cfg) {
+                Ok(client) => {
+                    if let Err(e) = crate::notify::send_batch_pdf_to_group(
+                        &client,
+                        &bytes,
+                        &pdf_filename,
+                        &subject,
+                    )
+                    .await
+                    {
+                        tracing::warn!(error = %e, "batch pdf to group failed (email sent anyway)");
+                    }
+                }
+                Err(e) => tracing::warn!(error = %e, "batch wazapin client init failed"),
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -263,7 +306,7 @@ pub async fn run_rekap_sore(s: &Scheduler) -> Result<()> {
         crate::daily_infographic::fmt_rp(report.current.gmv),
     );
     let fname = format!("rekap-{}.png", report.date);
-    let r = client.send_png_bytes(&png, &fname, &caption).await?;
+    let r = client.send_png_bytes(&png, &fname, &caption, false).await?;
     tracing::info!(date = %report.date, msg_id = %r.id, "rekap sore sent");
     Ok(())
 }
@@ -279,6 +322,9 @@ pub async fn run_cancel_printed(s: &Scheduler) -> Result<()> {
         .or_else(WazapinConfig::from_env)
         .ok_or_else(|| crate::error::Error::Other("WAZAPIN not set for cancel printed".into()))?;
     let client = WazapinClient::new(wz_cfg)?;
+    if !client.config().enabled_for_cancel() {
+        return Ok(());
+    }
 
     let wib = FixedOffset::east_opt(WIB_OFFSET).expect("WIB offset");
     let today_wib = Utc::now().with_timezone(&wib).date_naive();

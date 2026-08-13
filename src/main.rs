@@ -364,7 +364,7 @@ async fn main() -> anyhow::Result<()> {
                 auto_relogin: cfg.auto_relogin,
             };
             println!(
-                "worker: new every {}s, cancel {:02}:{:02} local, work {:02}:{:02}–{:02}:{:02} WIB, batch_pagi {}, batch_siang {}, instant_batch_every {}m, auto_relogin={}, webhook={}, wazapin_instant={}, wazapin_cancel={}",
+                "worker: new every {}s, cancel {:02}:{:02} local, work {:02}:{:02}–{:02}:{:02} WIB, batch_pagi {}, batch_siang {}, auto_print={}, instant_batch_every {}m, auto_relogin={}, webhook={}, wazapin_instant={}, wazapin_cancel={}, wazapin_batch={}",
                 wcfg.new_interval_secs,
                 wcfg.cancel_hour_local,
                 wcfg.cancel_minute_local,
@@ -376,6 +376,7 @@ async fn main() -> anyhow::Result<()> {
                     .unwrap_or_else(|_| "07:50".into()),
                 std::env::var("BATCH_SIANG_HOUR")
                     .unwrap_or_else(|_| "13:05".into()),
+                cfg.auto_print,
                 std::env::var("INSTANT_BATCH_INTERVAL_MIN")
                     .ok()
                     .and_then(|s| s.parse::<u64>().ok())
@@ -389,6 +390,10 @@ async fn main() -> anyhow::Result<()> {
                 wcfg.wazapin
                     .as_ref()
                     .map(|w| w.enabled_for_cancel())
+                    .unwrap_or(false),
+                wcfg.wazapin
+                    .as_ref()
+                    .map(|w| w.enabled_for_batch())
                     .unwrap_or(false)
             );
             sync::run_worker(pool, cfg, wcfg).await?;
@@ -617,7 +622,9 @@ async fn main() -> anyhow::Result<()> {
                     .and_then(|s| s.to_str())
                     .unwrap_or("rekap-sore.png");
                 println!("sending …");
-                let r = client.send_png_bytes(&png, filename, &caption).await?;
+                let r = client
+                    .send_png_bytes(&png, filename, &caption, false)
+                    .await?;
                 println!("ok msg_id={}", r.id);
             }
         }

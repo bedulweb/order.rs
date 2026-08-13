@@ -74,7 +74,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .and_then(|s| s.to_str())
             .unwrap_or("rekap-sore.png");
         println!("sending …");
-        let r = client.send_png_bytes(&png, filename, &caption).await?;
+        let r = client
+            .send_png_bytes(&png, filename, &caption, false)
+            .await?;
         println!("ok msg_id={}", r.id);
     }
 

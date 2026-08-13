@@ -36,6 +36,9 @@ pub struct Config {
     pub account_code: Option<String>,
     /// Worker re-login on BS auth expiry (default true).
     pub auto_relogin: bool,
+    /// Automatically email scheduled batch PDFs to the printer and mark them
+    /// printed in BigSeller (default false). Manual print actions are separate.
+    pub auto_print: bool,
     /// Directory of built ops SPA (`web/dist`). Empty/`off` disables static serve.
     pub web_dist: Option<PathBuf>,
     /// SMTP relay for email notifications (e.g. Resend). None if not configured.
@@ -112,6 +115,7 @@ impl Config {
                 .ok()
                 .map(|s| matches!(s.to_lowercase().as_str(), "1" | "true" | "yes" | "on"))
                 .unwrap_or(true),
+            auto_print: parse_env_bool(env::var("AUTO_PRINT").ok(), false),
             web_dist: match env::var("WEB_DIST") {
                 Ok(s) if matches!(s.to_ascii_lowercase().as_str(), "" | "off" | "0" | "false") => {
                     None
@@ -182,6 +186,17 @@ pub fn resolve_under_root(path: &Path) -> PathBuf {
 
 /// Parse an env var as `HH:MM` (24h) into minutes since midnight, falling back
 /// to `default_min` when unset/invalid.
+fn parse_env_bool(value: Option<String>, default: bool) -> bool {
+    value
+        .map(|s| {
+            matches!(
+                s.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(default)
+}
+
 fn env_hhmm(key: &str, default_min: u32) -> u32 {
     let raw = match env::var(key) {
         Ok(s) if !s.trim().is_empty() => s,
@@ -197,4 +212,14 @@ fn env_hhmm(key: &str, default_min: u32) -> u32 {
         .and_then(|s| s.trim().parse().ok())
         .unwrap_or(default_min % 60);
     (h.min(23) * 60 + m.min(59)).min(24 * 60 - 1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_env_bool;
+
+    #[test]
+    fn auto_print_is_disabled_by_default() {
+        assert!(!parse_env_bool(None, false));
+    }
 }
