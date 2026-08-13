@@ -1,0 +1,32 @@
+# Auto-deploy ke Dokku (app `orders`) setiap push ke main.
+name: Deploy ke Dokku
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: deploy-dokku
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Push ke Dokku
+        env:
+          DOKKU_SSH_PRIVATE_KEY: ${{ secrets.DOKKU_SSH_PRIVATE_KEY }}
+          DOKKU_HOST: 160.187.211.38
+          DOKKU_APP: orders
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DOKKU_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DOKKU_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          git remote add dokku "dokku@${DOKKU_HOST}:${DOKKU_APP}"
+          git push dokku main
