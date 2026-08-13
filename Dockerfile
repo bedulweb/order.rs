@@ -15,7 +15,7 @@ RUN npm run build
 # --- Stage 2: Rust release build ---
 FROM ubuntu:24.04 AS build
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential curl ca-certificates pkg-config \
+        build-essential curl ca-certificates pkg-config libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.97.1
 ENV PATH="/root/.cargo/bin:${PATH}"
@@ -24,7 +24,8 @@ COPY Cargo.toml Cargo.lock ./
 COPY src/ src/
 COPY examples/ examples/
 COPY tests/ tests/
-RUN --mount=type=cache,target=/app/target cargo build --release --locked
+RUN --mount=type=cache,target=/app/target \
+    cargo build --release --locked && cp /app/target/release/orders /app/orders
 
 # --- Stage 3: ambil model captcha ddddocr (tidak di-track git) ---
 FROM python:3.12-slim AS model
@@ -38,7 +39,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 ENV TZ=Asia/Jakarta
 WORKDIR /app
-COPY --from=build /app/target/release/orders /app/orders
+COPY --from=build /app/orders /app/orders
 COPY --from=web /app/web/dist /app/web/dist
 COPY --from=model /common_old.onnx /app/models/common_old.onnx
 COPY models/charset.json /app/models/charset.json
